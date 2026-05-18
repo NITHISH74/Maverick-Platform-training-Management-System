@@ -1,0 +1,2160 @@
+openapi: 3.1.0
+info:
+  title: Api
+  version: 1.0.0
+  description: Maverick Execution Platform API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: auth
+    description: Authentication
+  - name: users
+    description: User management
+  - name: batches
+    description: Training batch management
+  - name: candidates
+    description: Candidate management
+  - name: attendance
+    description: Attendance tracking
+  - name: assessments
+    description: Assessment management
+  - name: toppers
+    description: Topper identification
+  - name: feedback
+    description: Feedback management
+  - name: notifications
+    description: Notifications
+  - name: dashboard
+    description: Dashboard metrics
+  - name: reports
+    description: Reports and downloads
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  # AUTH
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginInput"
+      responses:
+        "200":
+          description: Successful login
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Logout current user
+      responses:
+        "200":
+          description: Logged out
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current user
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Not authenticated
+
+  # USERS
+  /users:
+    get:
+      operationId: listUsers
+      tags: [users]
+      summary: List all users
+      parameters:
+        - in: query
+          name: role
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of users
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/User"
+    post:
+      operationId: createUser
+      tags: [users]
+      summary: Create a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserInput"
+      responses:
+        "201":
+          description: Created user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+
+  /users/{id}:
+    get:
+      operationId: getUser
+      tags: [users]
+      summary: Get a user by ID
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: User
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateUser
+      tags: [users]
+      summary: Update a user
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UserUpdate"
+      responses:
+        "200":
+          description: Updated user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+    delete:
+      operationId: deleteUser
+      tags: [users]
+      summary: Delete a user
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  # BATCHES
+  /batches:
+    get:
+      operationId: listBatches
+      tags: [batches]
+      summary: List all training batches
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of batches
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Batch"
+    post:
+      operationId: createBatch
+      tags: [batches]
+      summary: Create a training batch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchInput"
+      responses:
+        "201":
+          description: Created batch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Batch"
+
+  /batches/{id}:
+    get:
+      operationId: getBatch
+      tags: [batches]
+      summary: Get a batch by ID
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Batch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Batch"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateBatch
+      tags: [batches]
+      summary: Update a batch
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchUpdate"
+      responses:
+        "200":
+          description: Updated batch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Batch"
+    delete:
+      operationId: deleteBatch
+      tags: [batches]
+      summary: Delete a batch
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /batches/{id}/status:
+    patch:
+      operationId: updateBatchStatus
+      tags: [batches]
+      summary: Update batch lifecycle status
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchStatusUpdate"
+      responses:
+        "200":
+          description: Updated batch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Batch"
+
+  /batches/{id}/candidates:
+    get:
+      operationId: listBatchCandidates
+      tags: [batches]
+      summary: List candidates in a batch
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Candidates in batch
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Candidate"
+
+  # CANDIDATES
+  /candidates:
+    get:
+      operationId: listCandidates
+      tags: [candidates]
+      summary: List all candidates
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+        - in: query
+          name: status
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of candidates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Candidate"
+    post:
+      operationId: createCandidate
+      tags: [candidates]
+      summary: Create a candidate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CandidateInput"
+      responses:
+        "201":
+          description: Created candidate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Candidate"
+
+  /candidates/{id}:
+    get:
+      operationId: getCandidate
+      tags: [candidates]
+      summary: Get a candidate by ID
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Candidate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Candidate"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateCandidate
+      tags: [candidates]
+      summary: Update a candidate
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CandidateUpdate"
+      responses:
+        "200":
+          description: Updated candidate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Candidate"
+    delete:
+      operationId: deleteCandidate
+      tags: [candidates]
+      summary: Delete a candidate
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /candidates/{id}/status:
+    patch:
+      operationId: updateCandidateStatus
+      tags: [candidates]
+      summary: Update candidate status
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CandidateStatusUpdate"
+      responses:
+        "200":
+          description: Updated candidate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Candidate"
+
+  # ATTENDANCE
+  /attendance:
+    get:
+      operationId: listAttendance
+      tags: [attendance]
+      summary: List attendance records
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+        - in: query
+          name: date
+          schema:
+            type: string
+        - in: query
+          name: candidateId
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Attendance records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceRecord"
+    post:
+      operationId: createAttendance
+      tags: [attendance]
+      summary: Submit attendance record
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttendanceInput"
+      responses:
+        "201":
+          description: Created attendance record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceRecord"
+
+  /attendance/bulk:
+    post:
+      operationId: bulkCreateAttendance
+      tags: [attendance]
+      summary: Submit bulk attendance records
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkAttendanceInput"
+      responses:
+        "201":
+          description: Created attendance records
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceRecord"
+
+  /attendance/summary:
+    get:
+      operationId: getAttendanceSummary
+      tags: [attendance]
+      summary: Get attendance summary by batch
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Attendance summary
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceSummary"
+
+  /attendance/{id}:
+    patch:
+      operationId: updateAttendance
+      tags: [attendance]
+      summary: Update an attendance record
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AttendanceUpdate"
+      responses:
+        "200":
+          description: Updated attendance record
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AttendanceRecord"
+
+  # ASSESSMENTS
+  /assessments:
+    get:
+      operationId: listAssessments
+      tags: [assessments]
+      summary: List assessments
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+        - in: query
+          name: type
+          schema:
+            type: string
+      responses:
+        "200":
+          description: List of assessments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Assessment"
+    post:
+      operationId: createAssessment
+      tags: [assessments]
+      summary: Create an assessment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssessmentInput"
+      responses:
+        "201":
+          description: Created assessment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Assessment"
+
+  /assessments/{id}:
+    get:
+      operationId: getAssessment
+      tags: [assessments]
+      summary: Get an assessment by ID
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Assessment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Assessment"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateAssessment
+      tags: [assessments]
+      summary: Update an assessment
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssessmentUpdate"
+      responses:
+        "200":
+          description: Updated assessment
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Assessment"
+    delete:
+      operationId: deleteAssessment
+      tags: [assessments]
+      summary: Delete an assessment
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /assessment-scores:
+    get:
+      operationId: listAssessmentScores
+      tags: [assessments]
+      summary: List assessment scores
+      parameters:
+        - in: query
+          name: assessmentId
+          schema:
+            type: integer
+        - in: query
+          name: candidateId
+          schema:
+            type: integer
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of scores
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AssessmentScore"
+    post:
+      operationId: createAssessmentScore
+      tags: [assessments]
+      summary: Submit an assessment score
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssessmentScoreInput"
+      responses:
+        "201":
+          description: Created score
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssessmentScore"
+
+  /assessment-scores/bulk:
+    post:
+      operationId: bulkCreateAssessmentScores
+      tags: [assessments]
+      summary: Submit bulk assessment scores
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkAssessmentScoreInput"
+      responses:
+        "201":
+          description: Created scores
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AssessmentScore"
+
+  /assessment-scores/{id}:
+    patch:
+      operationId: updateAssessmentScore
+      tags: [assessments]
+      summary: Update an assessment score
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AssessmentScoreUpdate"
+      responses:
+        "200":
+          description: Updated score
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssessmentScore"
+
+  # TOPPERS
+  /toppers:
+    get:
+      operationId: listToppers
+      tags: [toppers]
+      summary: List toppers
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: List of toppers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TopperResult"
+
+  /toppers/compute:
+    post:
+      operationId: computeToppers
+      tags: [toppers]
+      summary: Compute toppers for a batch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ComputeTopperInput"
+      responses:
+        "200":
+          description: Computed toppers
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TopperResult"
+
+  /topper-config:
+    get:
+      operationId: getTopperConfig
+      tags: [toppers]
+      summary: Get topper configuration
+      responses:
+        "200":
+          description: Topper config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TopperConfig"
+    patch:
+      operationId: updateTopperConfig
+      tags: [toppers]
+      summary: Update topper configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TopperConfigUpdate"
+      responses:
+        "200":
+          description: Updated config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TopperConfig"
+
+  # FEEDBACK
+  /feedback:
+    get:
+      operationId: listFeedback
+      tags: [feedback]
+      summary: List feedback responses
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Feedback list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FeedbackResponse"
+    post:
+      operationId: submitFeedback
+      tags: [feedback]
+      summary: Submit feedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeedbackInput"
+      responses:
+        "201":
+          description: Submitted feedback
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedbackResponse"
+
+  /feedback/trigger:
+    post:
+      operationId: triggerFeedbackEmail
+      tags: [feedback]
+      summary: Trigger feedback collection email for a batch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeedbackTriggerInput"
+      responses:
+        "200":
+          description: Email triggered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionResult"
+
+  /feedback/summary:
+    get:
+      operationId: getFeedbackSummary
+      tags: [feedback]
+      summary: Get feedback summary for a batch
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Feedback summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedbackSummary"
+
+  # NOTIFICATIONS
+  /notifications:
+    get:
+      operationId: listNotifications
+      tags: [notifications]
+      summary: List notifications for current user
+      parameters:
+        - in: query
+          name: unreadOnly
+          schema:
+            type: boolean
+      responses:
+        "200":
+          description: Notifications
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Notification"
+
+  /notifications/{id}/read:
+    patch:
+      operationId: markNotificationRead
+      tags: [notifications]
+      summary: Mark a notification as read
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Updated notification
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Notification"
+
+  /notifications/read-all:
+    patch:
+      operationId: markAllNotificationsRead
+      tags: [notifications]
+      summary: Mark all notifications as read
+      responses:
+        "200":
+          description: All notifications marked read
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActionResult"
+
+  # DASHBOARD
+  /dashboard/summary:
+    get:
+      operationId: getDashboardSummary
+      tags: [dashboard]
+      summary: Get overall dashboard summary metrics
+      responses:
+        "200":
+          description: Dashboard summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardSummary"
+
+  /dashboard/batch-metrics:
+    get:
+      operationId: getBatchMetrics
+      tags: [dashboard]
+      summary: Get per-batch metrics
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Batch metrics
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BatchMetric"
+
+  /dashboard/attendance-trends:
+    get:
+      operationId: getAttendanceTrends
+      tags: [dashboard]
+      summary: Get attendance trends over time
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+        - in: query
+          name: days
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Attendance trends
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceTrend"
+
+  /dashboard/recent-activity:
+    get:
+      operationId: getRecentActivity
+      tags: [dashboard]
+      summary: Get recent activity feed
+      responses:
+        "200":
+          description: Recent activity
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityItem"
+
+  /dashboard/candidate-status-breakdown:
+    get:
+      operationId: getCandidateStatusBreakdown
+      tags: [dashboard]
+      summary: Candidate status breakdown counts
+      responses:
+        "200":
+          description: Status breakdown
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/StatusCount"
+
+  # BULK IMPORT
+  /candidates/bulk-import:
+    post:
+      operationId: bulkImportCandidates
+      tags: [candidates]
+      summary: Bulk import candidates
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkImportCandidatesBody"
+      responses:
+        "200":
+          description: Import result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkImportResult"
+
+  /assessments/bulk-scores:
+    post:
+      operationId: bulkUploadAssessmentScores
+      tags: [assessments]
+      summary: Bulk upload assessment scores
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BulkUploadScoresBody"
+      responses:
+        "200":
+          description: Upload result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BulkImportResult"
+
+  # REPORTS
+  /reports/attendance:
+    get:
+      operationId: getAttendanceReport
+      tags: [reports]
+      summary: Get attendance report data
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+        - in: query
+          name: startDate
+          schema:
+            type: string
+        - in: query
+          name: endDate
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Attendance report rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceReportRow"
+
+  /reports/assessments:
+    get:
+      operationId: getAssessmentReport
+      tags: [reports]
+      summary: Get assessment score report data
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Assessment report rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AssessmentReportRow"
+
+  /reports/toppers:
+    get:
+      operationId: getTopperReport
+      tags: [reports]
+      summary: Get topper report data
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Topper report rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TopperReportRow"
+
+  /reports/consolidated:
+    get:
+      operationId: getConsolidatedReport
+      tags: [reports]
+      summary: Get consolidated candidate report
+      parameters:
+        - in: query
+          name: batchId
+          schema:
+            type: integer
+        - in: query
+          name: status
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Consolidated report rows
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ConsolidatedReportRow"
+
+  # ATTENDANCE ALERTS
+  /attendance/alerts:
+    get:
+      operationId: getAttendanceAlerts
+      tags: [attendance]
+      summary: Get candidates with 3+ consecutive absences
+      responses:
+        "200":
+          description: Attendance alerts
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AttendanceAlert"
+
+  # AUDIT LOGS
+  /audit-logs:
+    get:
+      operationId: listAuditLogs
+      tags: [reports]
+      summary: List audit log entries
+      parameters:
+        - in: query
+          name: entityType
+          schema:
+            type: string
+        - in: query
+          name: limit
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Audit logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AuditLog"
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+
+    # AUTH
+    LoginInput:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+
+    AuthResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/User"
+
+    # USERS
+    User:
+      type: object
+      required: [id, name, email, role, isActive, createdAt]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+          enum: [admin, coordinator, trainer]
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: ["string", "null"]
+          format: date-time
+
+    UserInput:
+      type: object
+      required: [name, email, password, role]
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+        role:
+          type: string
+          enum: [admin, coordinator, trainer]
+
+    UserUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        role:
+          type: string
+          enum: [admin, coordinator, trainer]
+        isActive:
+          type: boolean
+
+    # BATCHES
+    Batch:
+      type: object
+      required: [id, batchCode, name, program, startDate, endDate, status, capacity, createdAt]
+      properties:
+        id:
+          type: integer
+        batchCode:
+          type: string
+        name:
+          type: string
+        program:
+          type: string
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [planned, running, completed, closed]
+        capacity:
+          type: integer
+        coordinatorId:
+          type: ["integer", "null"]
+        coordinatorName:
+          type: ["string", "null"]
+        trainerIds:
+          type: array
+          items:
+            type: integer
+        trainerNames:
+          type: array
+          items:
+            type: string
+        candidateCount:
+          type: integer
+        attendanceCutoffTime:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: ["string", "null"]
+          format: date-time
+
+    BatchInput:
+      type: object
+      required: [name, program, startDate, endDate, capacity]
+      properties:
+        name:
+          type: string
+        program:
+          type: string
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        capacity:
+          type: integer
+        coordinatorId:
+          type: ["integer", "null"]
+        trainerIds:
+          type: array
+          items:
+            type: integer
+        attendanceCutoffTime:
+          type: string
+
+    BatchUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        program:
+          type: string
+        startDate:
+          type: string
+          format: date
+        endDate:
+          type: string
+          format: date
+        capacity:
+          type: integer
+        coordinatorId:
+          type: ["integer", "null"]
+        trainerIds:
+          type: array
+          items:
+            type: integer
+        attendanceCutoffTime:
+          type: string
+
+    BatchStatusUpdate:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [planned, running, completed, closed]
+
+    # CANDIDATES
+    Candidate:
+      type: object
+      required: [id, candidateId, name, email, status, createdAt]
+      properties:
+        id:
+          type: integer
+        candidateId:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+        phone:
+          type: ["string", "null"]
+        status:
+          type: string
+          enum: [active, discontinued, cleared, not_cleared, offered, onboarded]
+        batchId:
+          type: ["integer", "null"]
+        batchName:
+          type: ["string", "null"]
+        college:
+          type: ["string", "null"]
+        degree:
+          type: ["string", "null"]
+        joinedAt:
+          type: ["string", "null"]
+          format: date
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: ["string", "null"]
+          format: date-time
+
+    CandidateInput:
+      type: object
+      required: [candidateId, name, email]
+      properties:
+        candidateId:
+          type: string
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        batchId:
+          type: ["integer", "null"]
+        college:
+          type: string
+        degree:
+          type: string
+        joinedAt:
+          type: string
+          format: date
+
+    CandidateUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        phone:
+          type: string
+        batchId:
+          type: ["integer", "null"]
+        college:
+          type: string
+        degree:
+          type: string
+
+    CandidateStatusUpdate:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [active, discontinued, cleared, not_cleared, offered, onboarded]
+
+    # ATTENDANCE
+    AttendanceRecord:
+      type: object
+      required: [id, candidateId, batchId, date, status, createdAt]
+      properties:
+        id:
+          type: integer
+        candidateId:
+          type: integer
+        candidateName:
+          type: ["string", "null"]
+        batchId:
+          type: integer
+        date:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [present, absent, leave, late]
+        remarks:
+          type: ["string", "null"]
+        submittedById:
+          type: ["integer", "null"]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: ["string", "null"]
+          format: date-time
+
+    AttendanceInput:
+      type: object
+      required: [candidateId, batchId, date, status]
+      properties:
+        candidateId:
+          type: integer
+        batchId:
+          type: integer
+        date:
+          type: string
+          format: date
+        status:
+          type: string
+          enum: [present, absent, leave, late]
+        remarks:
+          type: string
+
+    AttendanceUpdate:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [present, absent, leave, late]
+        remarks:
+          type: string
+
+    BulkAttendanceInput:
+      type: object
+      required: [batchId, date, records]
+      properties:
+        batchId:
+          type: integer
+        date:
+          type: string
+          format: date
+        records:
+          type: array
+          items:
+            type: object
+            required: [candidateId, status]
+            properties:
+              candidateId:
+                type: integer
+              status:
+                type: string
+                enum: [present, absent, leave, late]
+              remarks:
+                type: string
+
+    AttendanceSummary:
+      type: object
+      required: [candidateId, candidateName, totalDays, presentDays, absentDays, leaveDays, lateDays, attendancePercent]
+      properties:
+        candidateId:
+          type: integer
+        candidateName:
+          type: string
+        totalDays:
+          type: integer
+        presentDays:
+          type: integer
+        absentDays:
+          type: integer
+        leaveDays:
+          type: integer
+        lateDays:
+          type: integer
+        attendancePercent:
+          type: number
+
+    # ASSESSMENTS
+    Assessment:
+      type: object
+      required: [id, batchId, title, type, scheduledDate, maxScore, createdAt]
+      properties:
+        id:
+          type: integer
+        batchId:
+          type: integer
+        batchName:
+          type: ["string", "null"]
+        title:
+          type: string
+        type:
+          type: string
+          enum: [sprint_review, coding, api, project_evaluation]
+        scheduledDate:
+          type: string
+          format: date
+        maxScore:
+          type: number
+        description:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: ["string", "null"]
+          format: date-time
+
+    AssessmentInput:
+      type: object
+      required: [batchId, title, type, scheduledDate, maxScore]
+      properties:
+        batchId:
+          type: integer
+        title:
+          type: string
+        type:
+          type: string
+          enum: [sprint_review, coding, api, project_evaluation]
+        scheduledDate:
+          type: string
+          format: date
+        maxScore:
+          type: number
+        description:
+          type: string
+
+    AssessmentUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+        scheduledDate:
+          type: string
+          format: date
+        maxScore:
+          type: number
+        description:
+          type: string
+
+    AssessmentScore:
+      type: object
+      required: [id, assessmentId, candidateId, score, createdAt]
+      properties:
+        id:
+          type: integer
+        assessmentId:
+          type: integer
+        assessmentTitle:
+          type: ["string", "null"]
+        assessmentType:
+          type: ["string", "null"]
+        candidateId:
+          type: integer
+        candidateName:
+          type: ["string", "null"]
+        score:
+          type: number
+        maxScore:
+          type: ["number", "null"]
+        percentage:
+          type: ["number", "null"]
+        remarks:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
+    AssessmentScoreInput:
+      type: object
+      required: [assessmentId, candidateId, score]
+      properties:
+        assessmentId:
+          type: integer
+        candidateId:
+          type: integer
+        score:
+          type: number
+        remarks:
+          type: string
+
+    AssessmentScoreUpdate:
+      type: object
+      properties:
+        score:
+          type: number
+        remarks:
+          type: string
+
+    BulkAssessmentScoreInput:
+      type: object
+      required: [assessmentId, scores]
+      properties:
+        assessmentId:
+          type: integer
+        scores:
+          type: array
+          items:
+            type: object
+            required: [candidateId, score]
+            properties:
+              candidateId:
+                type: integer
+              score:
+                type: number
+              remarks:
+                type: string
+
+    # TOPPERS
+    TopperResult:
+      type: object
+      required: [id, batchId, candidateId, rank, totalScore, createdAt]
+      properties:
+        id:
+          type: integer
+        batchId:
+          type: integer
+        batchName:
+          type: ["string", "null"]
+        candidateId:
+          type: integer
+        candidateName:
+          type: ["string", "null"]
+        rank:
+          type: integer
+        totalScore:
+          type: number
+        assessmentScore:
+          type: ["number", "null"]
+        projectScore:
+          type: ["number", "null"]
+        attendanceScore:
+          type: ["number", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
+    ComputeTopperInput:
+      type: object
+      required: [batchId]
+      properties:
+        batchId:
+          type: integer
+
+    TopperConfig:
+      type: object
+      required: [id, assessmentWeight, projectWeight, attendanceWeight, updatedAt]
+      properties:
+        id:
+          type: integer
+        assessmentWeight:
+          type: number
+        projectWeight:
+          type: number
+        attendanceWeight:
+          type: number
+        updatedAt:
+          type: string
+          format: date-time
+
+    TopperConfigUpdate:
+      type: object
+      properties:
+        assessmentWeight:
+          type: number
+        projectWeight:
+          type: number
+        attendanceWeight:
+          type: number
+
+    # FEEDBACK
+    FeedbackResponse:
+      type: object
+      required: [id, batchId, candidateId, contentRating, trainerRating, createdAt]
+      properties:
+        id:
+          type: integer
+        batchId:
+          type: integer
+        batchName:
+          type: ["string", "null"]
+        candidateId:
+          type: integer
+        candidateName:
+          type: ["string", "null"]
+        contentRating:
+          type: integer
+        trainerRating:
+          type: integer
+        overallRating:
+          type: ["integer", "null"]
+        comments:
+          type: ["string", "null"]
+        sentiment:
+          type: ["string", "null"]
+          enum: [positive, neutral, negative, null]
+        createdAt:
+          type: string
+          format: date-time
+
+    FeedbackInput:
+      type: object
+      required: [batchId, candidateId, contentRating, trainerRating]
+      properties:
+        batchId:
+          type: integer
+        candidateId:
+          type: integer
+        contentRating:
+          type: integer
+        trainerRating:
+          type: integer
+        overallRating:
+          type: integer
+        comments:
+          type: string
+
+    FeedbackTriggerInput:
+      type: object
+      required: [batchId]
+      properties:
+        batchId:
+          type: integer
+
+    FeedbackSummary:
+      type: object
+      required: [batchId, totalResponses, avgContentRating, avgTrainerRating, avgOverallRating, positiveCount, neutralCount, negativeCount]
+      properties:
+        batchId:
+          type: integer
+        totalResponses:
+          type: integer
+        avgContentRating:
+          type: number
+        avgTrainerRating:
+          type: number
+        avgOverallRating:
+          type: number
+        positiveCount:
+          type: integer
+        neutralCount:
+          type: integer
+        negativeCount:
+          type: integer
+
+    # NOTIFICATIONS
+    Notification:
+      type: object
+      required: [id, userId, title, message, type, isRead, createdAt]
+      properties:
+        id:
+          type: integer
+        userId:
+          type: integer
+        title:
+          type: string
+        message:
+          type: string
+        type:
+          type: string
+          enum: [attendance_missing, continuous_absence, assessment_reminder, feedback_reminder, upload_success, escalation, info]
+        isRead:
+          type: boolean
+        relatedEntityType:
+          type: ["string", "null"]
+        relatedEntityId:
+          type: ["integer", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
+    # DASHBOARD
+    DashboardSummary:
+      type: object
+      required: [totalBatches, runningBatches, totalCandidates, totalTrainers, totalCoordinators, avgAttendancePercent, assessmentClearanceRate, pendingFeedback, activeAlerts]
+      properties:
+        totalBatches:
+          type: integer
+        runningBatches:
+          type: integer
+        plannedBatches:
+          type: integer
+        completedBatches:
+          type: integer
+        totalCandidates:
+          type: integer
+        activeCandidates:
+          type: integer
+        discontinuedCandidates:
+          type: integer
+        clearedCandidates:
+          type: integer
+        offeredCandidates:
+          type: integer
+        onboardedCandidates:
+          type: integer
+        totalTrainers:
+          type: integer
+        totalCoordinators:
+          type: integer
+        avgAttendancePercent:
+          type: number
+        assessmentClearanceRate:
+          type: number
+        pendingFeedback:
+          type: integer
+        activeAlerts:
+          type: integer
+
+    BatchMetric:
+      type: object
+      required: [batchId, batchName, candidateCount, attendancePercent, assessmentAvgScore, status]
+      properties:
+        batchId:
+          type: integer
+        batchName:
+          type: string
+        candidateCount:
+          type: integer
+        attendancePercent:
+          type: number
+        assessmentAvgScore:
+          type: number
+        status:
+          type: string
+
+    AttendanceTrend:
+      type: object
+      required: [date, presentCount, absentCount, leaveCount, lateCount, totalCount]
+      properties:
+        date:
+          type: string
+          format: date
+        presentCount:
+          type: integer
+        absentCount:
+          type: integer
+        leaveCount:
+          type: integer
+        lateCount:
+          type: integer
+        totalCount:
+          type: integer
+
+    ActivityItem:
+      type: object
+      required: [id, type, description, entityType, createdAt]
+      properties:
+        id:
+          type: integer
+        type:
+          type: string
+        description:
+          type: string
+        entityType:
+          type: string
+        entityId:
+          type: ["integer", "null"]
+        actorName:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
+    StatusCount:
+      type: object
+      required: [status, count]
+      properties:
+        status:
+          type: string
+        count:
+          type: integer
+
+    # AUDIT
+    AuditLog:
+      type: object
+      required: [id, action, entityType, createdAt]
+      properties:
+        id:
+          type: integer
+        action:
+          type: string
+        entityType:
+          type: string
+        entityId:
+          type: ["integer", "null"]
+        actorId:
+          type: ["integer", "null"]
+        actorName:
+          type: ["string", "null"]
+        details:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
+    BulkImportCandidatesBody:
+      type: object
+      required: [batchId, candidates]
+      properties:
+        batchId:
+          type: integer
+        candidates:
+          type: array
+          items:
+            type: object
+            required: [candidateId, name, email]
+            properties:
+              candidateId:
+                type: string
+              name:
+                type: string
+              email:
+                type: string
+              phone:
+                type: string
+              college:
+                type: string
+              degree:
+                type: string
+
+    BulkUploadScoresBody:
+      type: object
+      required: [assessmentId, scores]
+      properties:
+        assessmentId:
+          type: integer
+        scores:
+          type: array
+          items:
+            type: object
+            required: [candidateId, score]
+            properties:
+              candidateId:
+                type: integer
+              score:
+                type: number
+              remarks:
+                type: string
+
+    BulkImportResult:
+      type: object
+      required: [inserted, failed, errors]
+      properties:
+        inserted:
+          type: integer
+        failed:
+          type: integer
+        errors:
+          type: array
+          items:
+            type: string
+
+    AttendanceReportRow:
+      type: object
+      required: [candidateName, batchName, date, status]
+      properties:
+        candidateId:
+          type: string
+        candidateName:
+          type: string
+        batchName:
+          type: string
+        date:
+          type: string
+        status:
+          type: string
+        remarks:
+          type: ["string", "null"]
+
+    AssessmentReportRow:
+      type: object
+      required: [candidateName, batchName, assessmentTitle, assessmentType, score, maxScore, percentage]
+      properties:
+        candidateName:
+          type: string
+        batchName:
+          type: string
+        assessmentTitle:
+          type: string
+        assessmentType:
+          type: string
+        score:
+          type: number
+        maxScore:
+          type: number
+        percentage:
+          type: number
+        scheduledDate:
+          type: string
+
+    TopperReportRow:
+      type: object
+      required: [rank, candidateName, batchName, totalScore]
+      properties:
+        rank:
+          type: integer
+        candidateName:
+          type: string
+        batchName:
+          type: string
+        totalScore:
+          type: number
+        assessmentScore:
+          type: ["number", "null"]
+        projectScore:
+          type: ["number", "null"]
+        attendanceScore:
+          type: ["number", "null"]
+
+    ConsolidatedReportRow:
+      type: object
+      required: [candidateName, batchName, status, attendancePct, avgScore]
+      properties:
+        candidateId:
+          type: string
+        candidateName:
+          type: string
+        batchName:
+          type: string
+        status:
+          type: string
+        attendancePct:
+          type: number
+        avgScore:
+          type: number
+        joinedAt:
+          type: ["string", "null"]
+
+    AttendanceAlert:
+      type: object
+      required: [candidateId, candidateName, batchName, consecutiveAbsences, lastAbsenceDate]
+      properties:
+        candidateId:
+          type: integer
+        candidateName:
+          type: string
+        batchName:
+          type: string
+        consecutiveAbsences:
+          type: integer
+        lastAbsenceDate:
+          type: string
+
+    ActionResult:
+      type: object
+      required: [success, message]
+      properties:
+        success:
+          type: boolean
+        message:
+          type: string
