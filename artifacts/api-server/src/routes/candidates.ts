@@ -46,18 +46,14 @@ router.post("/candidates", authMiddleware, async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const joinedAt = parsed.data.joinedAt instanceof Date
-    ? parsed.data.joinedAt.toISOString().split("T")[0]
-    : (parsed.data.joinedAt ?? null);
+  // college / degree / joinedAt are accepted in the request body for API
+  // compatibility but Supabase doesn't store those, so they're dropped.
   const [candidate] = await db.insert(candidatesTable).values({
     candidateId: parsed.data.candidateId,
     name: parsed.data.name,
     email: parsed.data.email,
     phone: parsed.data.phone ?? null,
     batchId: parsed.data.batchId ?? null,
-    college: parsed.data.college ?? null,
-    degree: parsed.data.degree ?? null,
-    joinedAt,
     status: "active",
   }).returning();
   res.status(201).json(await enrichCandidate(candidate));
@@ -147,10 +143,7 @@ router.post("/candidates/bulk-import", authMiddleware, async (req, res): Promise
         name: c.name,
         email: c.email,
         phone: c.phone ?? null,
-        college: c.college ?? null,
-        degree: c.degree ?? null,
         batchId,
-        joinedAt: new Date().toISOString().split("T")[0],
         status: "active",
       });
       inserted++;

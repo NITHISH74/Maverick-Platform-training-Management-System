@@ -256,11 +256,11 @@ create table if not exists agent_events (
 );
 create index if not exists idx_agent_events_run on agent_events(run_id);
 create index if not exists idx_agent_events_batch on agent_events(batch_id, created_at desc);
-create unique index if not exists uniq_agent_event_window on agent_events (
-  batch_id,
-  coalesce(candidate_id, 0),
-  issue_type,
-  date_trunc('hour', created_at) + (extract(minute from created_at)::int / 30) * interval '30 minutes'
+-- Idempotency lookup index for the agent's "did I already alert this in the last window?" check.
+-- DB-level uniqueness can't be expressed here because date_trunc is STABLE not IMMUTABLE;
+-- the agent enforces idempotency at the application layer (see WriteEventTool).
+create index if not exists idx_agent_events_idemp on agent_events (
+  batch_id, issue_type, created_at desc
 ) where action_taken <> 'no_action';
 
 create table if not exists agent_tasks (

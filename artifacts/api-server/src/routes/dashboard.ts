@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
-import { db, usersTable, batchesTable, candidatesTable, attendanceTable, assessmentScoresTable, assessmentsTable, feedbackTable, auditLogsTable, notificationsTable } from "@workspace/db";
+import { db, usersTable, batchesTable, candidatesTable, attendanceTable, assessmentsTable, feedbackTable, auditLogsTable, notificationsTable } from "@workspace/db";
 import { GetBatchMetricsQueryParams, GetAttendanceTrendsQueryParams } from "@workspace/api-zod";
 import { authMiddleware } from "../middlewares/auth";
 
@@ -21,16 +21,16 @@ router.get("/dashboard/summary", authMiddleware, async (req, res): Promise<void>
   const presentDays = allAttendance.filter(a => a.status === "present").length;
   const avgAttendancePercent = totalAttendanceDays > 0 ? Math.round((presentDays / totalAttendanceDays) * 100) : 0;
 
-  const allScores = await db.select().from(assessmentScoresTable);
+  // Supabase: each assessments row already carries score + passed (+ max_score).
   const allAssessments = await db.select().from(assessmentsTable);
   let clearanceRate = 0;
-  if (allScores.length > 0) {
-    const passed = allScores.filter(s => {
-      const assessment = allAssessments.find(a => a.id === s.assessmentId);
-      const max = assessment ? Number(assessment.maxScore) : 100;
-      return (Number(s.score) / max) >= 0.5;
+  if (allAssessments.length > 0) {
+    const passed = allAssessments.filter(a => {
+      if (a.passed != null) return a.passed;
+      const max = Number(a.maxScore) || 100;
+      return (Number(a.score) / max) >= 0.5;
     }).length;
-    clearanceRate = Math.round((passed / allScores.length) * 100);
+    clearanceRate = Math.round((passed / allAssessments.length) * 100);
   }
 
   res.json({
@@ -65,20 +65,15 @@ router.get("/dashboard/batch-metrics", authMiddleware, async (req, res): Promise
     const presentCount = attendance.filter(a => a.status === "present").length;
     const attendancePercent = attendance.length > 0 ? Math.round((presentCount / attendance.length) * 100) : 0;
 
+    // Supabase: each assessments row already carries score + max_score.
     const assessments = await db.select().from(assessmentsTable).where(eq(assessmentsTable.batchId, batch.id));
     let assessmentAvgScore = 0;
     if (assessments.length > 0) {
-      const assessmentIds = assessments.map(a => a.id);
-      const scores = await db.select().from(assessmentScoresTable);
-      const batchScores = scores.filter(s => assessmentIds.includes(s.assessmentId));
-      if (batchScores.length > 0) {
-        const pcts = batchScores.map(s => {
-          const assessment = assessments.find(a => a.id === s.assessmentId);
-          const max = assessment ? Number(assessment.maxScore) : 100;
-          return (Number(s.score) / max) * 100;
-        });
-        assessmentAvgScore = Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length);
-      }
+      const pcts = assessments.map(a => {
+        const max = Number(a.maxScore) || 100;
+        return (Number(a.score) / max) * 100;
+      });
+      assessmentAvgScore = Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length);
     }
 
     return {

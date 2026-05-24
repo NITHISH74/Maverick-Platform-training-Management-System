@@ -1,8 +1,7 @@
 import datetime as dt
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from app.schemas import RunIn
-from app.crew.runner import run_agent
 from app.deps import get_supabase
 
 router = APIRouter()
@@ -10,6 +9,12 @@ router = APIRouter()
 
 @router.post("/run")
 async def run(p: RunIn):
+    # Lazy import so the FastAPI service boots even if CrewAI isn't installed
+    # (e.g. dev/smoke-test environments without C++ build tools).
+    try:
+        from app.crew.runner import run_agent
+    except ImportError as e:
+        raise HTTPException(503, f"CrewAI not installed in this environment: {e}")
     return await run_agent(p.run_id, p.triggered_by, p.coordinator_id)
 
 

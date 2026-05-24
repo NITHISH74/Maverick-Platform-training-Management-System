@@ -8,12 +8,13 @@ export const batchesTable = pgTable("batches", {
   batchCode: text("batch_code").notNull().unique(),
   name: text("name").notNull(),
   program: text("program").notNull(),
-  startDate: text("start_date").notNull(), // stored as date string yyyy-mm-dd
+  startDate: text("start_date").notNull(),
   endDate: text("end_date").notNull(),
-  status: text("status").notNull().default("planned"), // planned | running | completed | closed
+  status: text("status").notNull().default("planned"),
   capacity: integer("capacity").notNull().default(30),
   coordinatorId: integer("coordinator_id").references(() => usersTable.id),
   attendanceCutoffTime: text("attendance_cutoff_time").notNull().default("10:00"),
+  modifiedBy: integer("modified_by"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

@@ -10,18 +10,25 @@ class Settings(BaseSettings):
     KEY_VAULT_URL: str = ""
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_KEY: str = ""
-    GEMINI_API_KEY: str = ""
-    GEMINI_MODEL: str = "gemini-2.5-flash"
-    EMBEDDING_MODEL: str = "text-embedding-004"
+    # Azure OpenAI
+    AZURE_OPENAI_ENDPOINT: str = ""
+    AZURE_OPENAI_API_KEY: str = ""
+    AZURE_OPENAI_DEPLOYMENT: str = "gpt-4.1"
+    AZURE_OPENAI_API_VERSION: str = "2024-12-01-preview"
+    AZURE_OPENAI_EMBEDDING_DEPLOYMENT: str = "text-embedding-ada-002"
     HF_LLAMA_ENDPOINT: str = ""
     HF_LLAMA_TOKEN: str = ""
     INTERNAL_SHARED_SECRET: str = "change-me"
     NODE_API_URL: str = "http://localhost:8080"
     SENTRY_DSN: str = ""
+    # Optional / informational — read by external tooling, not the app itself.
+    SUPABASE_ANON_KEY: str = ""
+    SUPABASE_DB_PASSWORD: str = ""
 
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
+        extra = "ignore"
 
 
 settings = Settings()
@@ -36,7 +43,11 @@ def load_secrets() -> None:
         mapping = {
             "supabase-url": "SUPABASE_URL",
             "supabase-service-key": "SUPABASE_SERVICE_KEY",
-            "gemini-api-key": "GEMINI_API_KEY",
+            "azure-openai-endpoint": "AZURE_OPENAI_ENDPOINT",
+            "azure-openai-api-key": "AZURE_OPENAI_API_KEY",
+            "azure-openai-deployment": "AZURE_OPENAI_DEPLOYMENT",
+            "azure-openai-api-version": "AZURE_OPENAI_API_VERSION",
+            "azure-openai-embedding-deployment": "AZURE_OPENAI_EMBEDDING_DEPLOYMENT",
             "hf-llama-endpoint": "HF_LLAMA_ENDPOINT",
             "hf-llama-token": "HF_LLAMA_TOKEN",
             "internal-shared-secret": "INTERNAL_SHARED_SECRET",

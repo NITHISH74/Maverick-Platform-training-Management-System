@@ -6,27 +6,34 @@ import { authMiddleware } from "../middlewares/auth";
 
 const router: IRouter = Router();
 
-function computeSentiment(overallRating: number | null, contentRating: number, trainerRating: number): string {
-  const avg = overallRating ?? ((contentRating + trainerRating) / 2);
-  if (avg >= 4) return "positive";
-  if (avg >= 3) return "neutral";
+function deriveSentiment(rating: number | null | undefined): string | null {
+  if (rating == null) return null;
+  if (rating >= 4) return "positive";
+  if (rating >= 3) return "neutral";
   return "negative";
 }
 
+// Supabase feedback has a much simpler shape (response_text + rating). The
+// legacy API exposed contentRating/trainerRating/overallRating/comments/
+// sentiment — we synthesise those from the single `rating` for backwards
+// compat so old clients keep parsing the response.
 async function enrichFeedback(f: typeof feedbackTable.$inferSelect) {
   const [batch] = await db.select({ name: batchesTable.name }).from(batchesTable).where(eq(batchesTable.id, f.batchId));
-  const [candidate] = await db.select({ name: candidatesTable.name }).from(candidatesTable).where(eq(candidatesTable.id, f.candidateId));
+  const [candidate] = f.candidateId
+    ? await db.select({ name: candidatesTable.name }).from(candidatesTable).where(eq(candidatesTable.id, f.candidateId))
+    : [undefined];
+  const rating = f.rating ?? null;
   return {
     id: f.id,
     batchId: f.batchId,
     batchName: batch?.name ?? null,
     candidateId: f.candidateId,
     candidateName: candidate?.name ?? null,
-    contentRating: f.contentRating,
-    trainerRating: f.trainerRating,
-    overallRating: f.overallRating ?? null,
-    comments: f.comments ?? null,
-    sentiment: f.sentiment ?? null,
+    contentRating: rating,
+    trainerRating: rating,
+    overallRating: rating,
+    comments: f.responseText,
+    sentiment: deriveSentiment(rating),
     createdAt: f.createdAt,
   };
 }
@@ -46,8 +53,15 @@ router.post("/feedback", authMiddleware, async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const sentiment = computeSentiment(parsed.data.overallRating ?? null, parsed.data.contentRating, parsed.data.trainerRating);
-  const [record] = await db.insert(feedbackTable).values({ ...parsed.data, sentiment, overallRating: parsed.data.overallRating ?? null }).returning();
+  const rating = parsed.data.overallRating ?? Math.round(((parsed.data.contentRating ?? 0) + (parsed.data.trainerRating ?? 0)) / 2);
+  const responseText = parsed.data.comments ?? "";
+  const [record] = await db.insert(feedbackTable).values({
+    batchId: parsed.data.batchId,
+    candidateId: parsed.data.candidateId ?? null,
+    trainerId: null,
+    rating,
+    responseText,
+  }).returning();
   res.status(201).json(await enrichFeedback(record));
 });
 
@@ -68,22 +82,18 @@ router.get("/feedback/summary", authMiddleware, async (req, res): Promise<void> 
     : await db.select().from(feedbackTable);
 
   const totalResponses = records.length;
-  const avgContentRating = totalResponses > 0 ? records.reduce((s, r) => s + r.contentRating, 0) / totalResponses : 0;
-  const avgTrainerRating = totalResponses > 0 ? records.reduce((s, r) => s + r.trainerRating, 0) / totalResponses : 0;
-  const avgOverallRating = totalResponses > 0 ? records.reduce((s, r) => s + (r.overallRating ?? ((r.contentRating + r.trainerRating) / 2)), 0) / totalResponses : 0;
-  const positiveCount = records.filter(r => r.sentiment === "positive").length;
-  const neutralCount = records.filter(r => r.sentiment === "neutral").length;
-  const negativeCount = records.filter(r => r.sentiment === "negative").length;
-
+  const rated = records.filter(r => r.rating != null);
+  const avg = rated.length > 0 ? rated.reduce((s, r) => s + (r.rating ?? 0), 0) / rated.length : 0;
+  const sentiments = rated.map(r => deriveSentiment(r.rating));
   res.json({
     batchId: batchId ?? 0,
     totalResponses,
-    avgContentRating: Math.round(avgContentRating * 10) / 10,
-    avgTrainerRating: Math.round(avgTrainerRating * 10) / 10,
-    avgOverallRating: Math.round(avgOverallRating * 10) / 10,
-    positiveCount,
-    neutralCount,
-    negativeCount,
+    avgContentRating: Math.round(avg * 10) / 10,
+    avgTrainerRating: Math.round(avg * 10) / 10,
+    avgOverallRating: Math.round(avg * 10) / 10,
+    positiveCount: sentiments.filter(s => s === "positive").length,
+    neutralCount: sentiments.filter(s => s === "neutral").length,
+    negativeCount: sentiments.filter(s => s === "negative").length,
   });
 });
 

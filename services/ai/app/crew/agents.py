@@ -1,6 +1,5 @@
-from crewai import Agent
+from crewai import Agent, LLM
 
-from app.ai.gemini import get_llm
 from app.config import settings
 from app.crew.tools import (
     ScanBatchesTool,
@@ -10,7 +9,17 @@ from app.crew.tools import (
     HistoricalLookupTool,
 )
 
-llm = get_llm(0.2)
+# CrewAI 0.80 uses LiteLLM under the hood. Passing a raw LangChain LLM here
+# causes litellm to fail with "Failed to get supported params: ... NoneType".
+# Use CrewAI's native LLM wrapper with the LiteLLM-style model identifier.
+# LiteLLM Azure OpenAI format: model="azure/<deployment>" with api_base/api_version.
+llm = LLM(
+    model=f"azure/{settings.AZURE_OPENAI_DEPLOYMENT}",
+    api_key=settings.AZURE_OPENAI_API_KEY,
+    base_url=settings.AZURE_OPENAI_ENDPOINT,
+    api_version=settings.AZURE_OPENAI_API_VERSION,
+    temperature=0.2,
+)
 
 batch_scanner = Agent(
     role="Data Analyst",

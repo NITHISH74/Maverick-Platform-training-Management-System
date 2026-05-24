@@ -34,8 +34,16 @@ router.post("/users", authMiddleware, async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const { password, ...rest } = parsed.data;
-  const [user] = await db.insert(usersTable).values({ ...rest, passwordHash: hashPassword(password) }).returning();
+  // Supabase has no password_hash column. Users are created lazily on first
+  // Auth0 sign-in via /auth/exchange; until that happens we still want this
+  // endpoint to land a row so admins can pre-create coordinators/trainers.
+  // We mint a synthetic auth0_sub keyed on email — the real one will overwrite
+  // it the first time that user signs in (auth0_sub is updated by exchange via
+  // ON CONFLICT-style upsert on email — see auth.ts).
+  const { password: _ignored, ...rest } = parsed.data;
+  void _ignored; void hashPassword;
+  const auth0Sub = `pending|${rest.email.toLowerCase()}`;
+  const [user] = await db.insert(usersTable).values({ ...rest, auth0Sub }).returning();
   res.status(201).json(serializeUser(user));
 });
 

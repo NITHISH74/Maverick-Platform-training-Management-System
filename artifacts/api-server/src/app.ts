@@ -29,6 +29,24 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Friendly root response so visiting http://localhost:8080/ doesn't show
+// "Cannot GET /". The API only serves routes under /api.
+app.get("/", (_req, res) => {
+  res.type("text/html").send(
+    `<!doctype html><html><head><title>Maverick API</title></head><body style="font-family:system-ui;max-width:640px;margin:40px auto;padding:0 16px;">
+<h1>Maverick API</h1>
+<p>This is the API server. It only serves routes under <code>/api</code>.</p>
+<ul>
+  <li><a href="/api/healthz">GET /api/healthz</a> — health check</li>
+  <li><code>POST /api/auth/login</code></li>
+  <li><code>POST /api/auth/exchange</code> (Auth0 → Base64 token bridge)</li>
+  <li><code>GET /api/auth/me</code></li>
+</ul>
+<p>Open the web app at <a href="http://localhost:5173/">http://localhost:5173/</a>.</p>
+</body></html>`,
+  );
+});
+
 app.use("/api", router);
 
 export default app;

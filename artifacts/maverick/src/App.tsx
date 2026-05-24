@@ -5,6 +5,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import NotFound from "@/pages/not-found";
+import { Spinner } from "@/components/ui/spinner";
+import { useAuth } from "@/hooks/useAuth";
 
 // Pages
 import Login from "@/pages/Login";
@@ -17,18 +19,34 @@ import Assessments from "@/pages/Assessments";
 import Attendance from "@/pages/Attendance";
 import Toppers from "@/pages/Toppers";
 import Feedback from "@/pages/Feedback";
+import Chatbot from "@/pages/Chatbot";
 import Notifications from "@/pages/Notifications";
 import Users from "@/pages/Users";
 import AuditLog from "@/pages/AuditLog";
 import Settings from "@/pages/Settings";
 import Reports from "@/pages/Reports";
 
+// Root path handler. When Auth0 redirects back from a login, the URL is
+// `/?code=...&state=...` — if we blindly <Redirect to="/dashboard">, wouter
+// strips the query string before the Auth0 SDK can read it, so login never
+// completes and we end up in a Sign-in → Accept loop. Instead, show a spinner
+// while Auth0 finishes, then route based on auth state.
+function RootGate() {
+  const { isLoading, isAuthenticated } = useAuth();
+  if (isLoading) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-background">
+        <Spinner className="h-8 w-8 text-primary" />
+      </div>
+    );
+  }
+  return <Redirect to={isAuthenticated ? "/dashboard" : "/login"} />;
+}
+
 function Router() {
   return (
     <Switch>
-      <Route path="/">
-        <Redirect to="/dashboard" />
-      </Route>
+      <Route path="/" component={RootGate} />
       <Route path="/login" component={Login} />
       
       <ProtectedRoute path="/dashboard" component={Dashboard} />
@@ -40,6 +58,7 @@ function Router() {
       <ProtectedRoute path="/attendance" component={Attendance} />
       <ProtectedRoute path="/toppers" component={Toppers} />
       <ProtectedRoute path="/feedback" component={Feedback} />
+      <ProtectedRoute path="/chatbot" component={Chatbot} />
       <ProtectedRoute path="/notifications" component={Notifications} />
       <ProtectedRoute path="/users" component={Users} allowedRoles={["admin"]} />
       <ProtectedRoute path="/audit" component={AuditLog} allowedRoles={["admin", "coordinator"]} />
