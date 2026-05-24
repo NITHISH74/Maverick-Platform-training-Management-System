@@ -8,6 +8,8 @@ Enterprise **Training Management System (TMS)** for running training programmes 
 
 - [Architecture](#architecture)
 - [Application flow](#application-flow)
+- [Key features](#key-features)
+- [Techniques used](#techniques-used)
 - [Tech stack](#tech-stack)
 - [Prerequisites](#prerequisites)
 - [Download and install](#download-and-install)
@@ -127,7 +129,52 @@ flowchart LR
   A --> J[Users / Audit / Reports<br/>Admin & Coordinator]
 ```
 
-**Auth model:** Stateless **Base64 JSON tokens** (not JWT). The frontend stores the token in `localStorage` under `maverick_token` and sends `Authorization: Bearer <token>` on API calls. There is **no separate third-party API key** (OpenAI, etc.) in this codebase.
+**Auth model:** Stateless **Base64 JSON tokens** (not JWT). The frontend stores the token in `localStorage` under `maverick_token` and sends `Authorization: Bearer <token>` on API calls. Auth0 is used for the sign-in flow; the Auth0 access token is exchanged once for the local Base64 API token via `POST /api/auth/exchange`.
+
+**AI layer:** A separate **Python / FastAPI** service (`services/ai/`) hosts the AI features (feedback analysis, notification copy, chatbot SQL+summary, CrewAI agent runs). It calls **Azure OpenAI GPT-4.1** via `langchain-openai` and `litellm`. The Node API proxies `/api/ai/*` to the FastAPI service using a shared internal token.
+
+---
+
+## Key features
+
+- **Role-based dashboards** — Admin, Coordinator, Trainer views with KPIs, attendance trends, pipeline funnel, recent activity.
+- **Batch lifecycle management** — create, assign trainers, status transitions (`planned → active → completed`).
+- **Candidate pipeline** — profile management with status flow (`active → discontinued / cleared / offered / onboarded`).
+- **Attendance** — daily roster marking, bulk CSV upload, CSV export.
+- **Assessments** — sprint reviews, coding rounds, API tests, project evaluations, all weighted.
+- **Toppers leaderboard** — Weighted Composite Score (WCS) ranking across assessment categories (see `replit.md`).
+- **Feedback & sentiment** — collect candidate feedback, AI-powered sentiment analysis (Azure OpenAI GPT-4.1).
+- **AI chatbot (RAG)** — natural-language Q&A over training data using SQL generation + text embeddings.
+- **AI notification copywriting** — auto-drafted notification messages via GPT-4.1.
+- **CrewAI agents** — multi-agent workflows for higher-level training operations.
+- **Notifications center** — per-user alerts with read/unread state.
+- **Users & RBAC** — Admin, Coordinator, Trainer roles, gated routes and APIs.
+- **Audit log** — system-wide action timeline.
+- **Reports** — admin/coordinator reporting surfaces.
+- **Auth0 sign-in** with stateless Base64 API tokens (exchanged at `/api/auth/exchange`).
+- **OpenAPI-first** contract → generated Zod schemas + TanStack Query React hooks (Orval).
+
+---
+
+## Techniques used
+
+| Area | Technique |
+|------|-----------|
+| Architecture | Monorepo with **pnpm workspaces**; three runtime layers (Node API · React UI · Python AI) |
+| Contract-first API | **OpenAPI 3** spec is the single source of truth; **Orval** generates Zod schemas + React Query hooks |
+| Validation | **Zod** schemas shared between server and client (`@workspace/api-zod`) |
+| Data access | **Drizzle ORM** with typed schema, migrations via `drizzle-kit push` |
+| Auth | **Auth0** SPA login → exchanged for stateless **Base64 JSON** API tokens, sent as `Bearer` |
+| API patterns | **Express 5** with role guards, request-scoped Pino logging, response enrichment middleware |
+| Frontend state | **TanStack Query v5** with auto-generated hooks, optimistic updates |
+| UI system | **React 19 + Vite 7**, **Tailwind CSS 4**, **shadcn/ui** primitives on Radix, **Recharts** for analytics |
+| Routing | `wouter` (tiny client router) with role-gated routes |
+| AI integration | **Azure OpenAI GPT-4.1** via **LangChain + litellm**; **CrewAI** multi-agent runs; RAG over Supabase data |
+| Service isolation | Node API ↔ FastAPI communicate via shared `x-internal-token` header (defense-in-depth) |
+| Secrets | Local `.env` files in dev; **Azure Key Vault** in production (auto-overrides plain env vars) |
+| Observability | **Pino** structured logs (Node); optional **Sentry** in FastAPI |
+| Build | **esbuild** bundles the API; **Vite** builds the SPA to static `dist/public`; FastAPI runs under **uvicorn** |
+| Deployment | **Replit Autoscale** with artifact-based service definitions (`artifact.toml`) |
 
 ---
 
@@ -135,12 +182,13 @@ flowchart LR
 
 | Area | Technology |
 |------|------------|
-| Runtime | Node.js **24** (see `.replit`) |
-| Package manager | **pnpm** workspaces (required; npm/yarn blocked) |
-| Language | TypeScript **5.9** |
-| Frontend | React 19, Vite 7, Tailwind CSS 4, shadcn/ui, Recharts, wouter |
+| Runtime | Node.js **24** (see `.replit`); Python **3.12** for the AI service |
+| Package manager | **pnpm** workspaces (required; npm/yarn blocked); **pip** for the AI service |
+| Language | TypeScript **5.9**; Python 3.12 |
+| Frontend | React 19, Vite 7, Tailwind CSS 4, shadcn/ui, Recharts, wouter, Auth0 |
 | API | Express 5, Pino logging |
-| Database | PostgreSQL **16**, Drizzle ORM |
+| AI service | FastAPI, LangChain, **Azure OpenAI GPT-4.1**, CrewAI, Supabase client |
+| Database | PostgreSQL **16** (Supabase), Drizzle ORM |
 | Validation | Zod (`@workspace/api-zod`) |
 | Client data | TanStack Query v5 (generated hooks) |
 | API codegen | Orval from OpenAPI |
@@ -153,7 +201,9 @@ flowchart LR
 |-------------|-----------------|
 | **Node.js** | 20+ locally; **24** on Replit (`nodejs-24` module) |
 | **pnpm** | 9+ — install globally: `npm install -g pnpm` |
+| **Python** | **3.12** (only needed if you want to run the AI service locally) |
 | **PostgreSQL** | 15+ locally, or hosted (Neon, Supabase, Railway, Replit DB) |
+| **Azure OpenAI** | A deployment of **GPT-4.1** (and optionally a text-embedding deployment) for the AI service |
 | **Git** | To clone the repository |
 
 ---
@@ -189,24 +239,49 @@ pnpm --filter @workspace/db run push
 
 ### 5. Start the application
 
-You need **two processes** (API + frontend). See [Run locally](#run-locally-windows--macos--linux) or [Run on Replit](#run-on-replit).
+You need **three processes** to run the full platform locally: the **Node API** (port 8080), the **Vite frontend** (port 5173) and the **Python AI service** (port 9000). The AI service is only required for the chatbot, feedback analysis, notification copy, and CrewAI agent endpoints — the rest of the UI works without it. See [Run locally](#run-locally-windows--macos--linux) or [Run on Replit](#run-on-replit).
 
 ---
 
 ## Configuration and secrets
 
-This app does **not** use external AI or payment API keys. Configuration is **environment variables** for the database, ports, and optional logging.
+The Node API needs `DATABASE_URL`, the frontend needs Auth0 credentials, and the Python AI service needs **Azure OpenAI** credentials. Everything else is optional.
 
 ### What to configure
+
+**Root `.env` (Node API + db)**
 
 | Variable | Required | Used by | Description |
 |----------|----------|---------|-------------|
 | **`DATABASE_URL`** | **Yes** | `lib/db`, Drizzle | PostgreSQL connection string |
 | **`PORT`** | **Yes** | API server & Vite | Listen port (see [ports table](#default-ports-and-routing)) |
 | **`BASE_PATH`** | **Yes** (frontend) | Maverick Vite app | URL base path (usually `/`) |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | Optional | Server-side admin ops | Used when the Node side talks to Supabase APIs |
 | `NODE_ENV` | Optional | API, Vite | `development` or `production` |
 | `LOG_LEVEL` | Optional | API logger | Default `info` |
-| `SESSION_SECRET` | Documented only | — | Mentioned in `replit.md` for future use; **auth currently uses stateless Base64 tokens** and does not read this variable |
+
+**`artifacts/maverick/.env` (frontend / Auth0)**
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `VITE_AUTH0_DOMAIN` | **Yes** | Auth0 tenant domain |
+| `VITE_AUTH0_CLIENT_ID` | **Yes** | Auth0 SPA client id |
+| `VITE_AUTH0_AUDIENCE` | **Yes** | Auth0 API audience |
+
+**`services/ai/.env` (Python AI service)**
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| **`AZURE_OPENAI_ENDPOINT`** | **Yes** | e.g. `https://<resource>.openai.azure.com/` |
+| **`AZURE_OPENAI_API_KEY`** | **Yes** | Azure OpenAI key |
+| **`AZURE_OPENAI_DEPLOYMENT`** | **Yes** | GPT-4.1 deployment name (default `gpt-4.1`) |
+| **`AZURE_OPENAI_API_VERSION`** | **Yes** | e.g. `2024-12-01-preview` |
+| `AZURE_OPENAI_EMBEDDING_DEPLOYMENT` | Optional | Embedding deployment for chatbot RAG (default `text-embedding-ada-002`) |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | **Yes** | The AI service reads/writes via the Supabase Python client |
+| `INTERNAL_SHARED_SECRET` | **Yes** | Shared header (`x-internal-token`) between Node API and AI service |
+| `NODE_API_URL` | Optional | Default `http://localhost:8080` |
+| `KEY_VAULT_URL` | Optional | If set, Azure Key Vault overrides plain env vars in prod |
+| `SENTRY_DSN` | Optional | FastAPI Sentry instrumentation |
 
 ### Where to add configuration
 
@@ -288,31 +363,90 @@ Settings from [`.replit`](.replit):
 
 ## Run locally (Windows / macOS / Linux)
 
-### Terminal 1 — API server
+> ✅ **Verified working locally** on Windows 10 + PowerShell 5.1, Node 24, Python 3.12 on 2026-05-24. All three layers (API · Frontend · AI) brought up successfully against Supabase Postgres + Azure OpenAI GPT-4.1.
+
+The platform runs as **three independent processes**. Open one PowerShell terminal per service from the repo root.
+
+### Quick reference — three layers, three commands (Windows PowerShell)
+
+| # | Layer | Port | Command (run from repo root, one per terminal) |
+|---|-------|------|------------------------------------------------|
+| 1 | **Node API** (`@workspace/api-server`) | **8080** | `Get-Content .env \| Where-Object {$_ -match '^[A-Z]'} \| ForEach-Object { $p=$_ -split '=',2; [Environment]::SetEnvironmentVariable($p[0],$p[1],'Process') }; pnpm --filter @workspace/api-server run build; pnpm --filter @workspace/api-server run start` |
+| 2 | **React Frontend** (`@workspace/maverick`, Vite) | **5173** | `$env:PORT="5173"; $env:BASE_PATH="/"; pnpm --filter @workspace/maverick run dev` |
+| 3 | **Python AI Service** (FastAPI / Azure OpenAI GPT-4.1) | **9000** | `& services/ai/.venv/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --app-dir services/ai` |
+
+Health checks (after each service is up):
+
+```powershell
+Invoke-WebRequest http://localhost:8080/api/healthz   # {"status":"ok"}
+Invoke-WebRequest http://localhost:5173/              # Vite HTML (200)
+Invoke-WebRequest http://localhost:9000/healthz       # {"ok":true,"env":"development"}
+```
+
+Open the app at **http://localhost:5173**.
+
+---
+
+### Terminal 1 — Node API server (port 8080)
+
+The packaged `dev` script uses Unix `export`, so on Windows we load `.env` ourselves and run `build` + `start` directly:
+
+```powershell
+# From repo root
+Get-Content .env | Where-Object {$_ -match '^[A-Z]'} | ForEach-Object {
+  $p = $_ -split '=',2
+  [Environment]::SetEnvironmentVariable($p[0], $p[1], 'Process')
+}
+$env:NODE_ENV = "development"
+$env:PORT     = "8080"
+
+pnpm --filter @workspace/api-server run build
+pnpm --filter @workspace/api-server run start
+```
+
+On macOS / Linux / Git Bash the bundled script works as-is:
 
 ```bash
-# Set env vars first (see Configuration section)
 pnpm --filter @workspace/api-server run dev
 ```
 
-> On **Windows**, the package script uses `export NODE_ENV=development` (Unix-only). Either use **Git Bash**, **WSL**, or run build + start manually:
->
-> ```powershell
-> $env:NODE_ENV = "development"
-> $env:PORT = "8080"
-> pnpm --filter @workspace/api-server run build
-> pnpm --filter @workspace/api-server run start
-> ```
+### Terminal 2 — React frontend (port 5173)
 
-### Terminal 2 — Frontend
-
-```bash
-$env:PORT = "5173"          # PowerShell
-$env:BASE_PATH = "/"        # PowerShell
+```powershell
+$env:PORT      = "5173"
+$env:BASE_PATH = "/"
 pnpm --filter @workspace/maverick run dev
 ```
 
-Open **http://localhost:5173** (or the port Vite prints).
+The Vite dev server proxies `/api` → `http://localhost:8080` (configured in `artifacts/maverick/vite.config.ts`). Open **http://localhost:5173**.
+
+### Terminal 3 — Python AI service (port 9000, Azure OpenAI GPT-4.1)
+
+The chatbot, feedback analysis, notification copy, and CrewAI agent runs live in a FastAPI service in `services/ai/`.
+
+```powershell
+# First-time setup only
+cd services/ai
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+cd ..\..
+
+# Make sure services/ai/.env has AZURE_OPENAI_*, SUPABASE_*, INTERNAL_SHARED_SECRET
+
+# Run (from repo root)
+& services/ai/.venv/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --app-dir services/ai
+```
+
+macOS / Linux equivalent:
+
+```bash
+cd services/ai
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port 9000
+```
+
+Health check: `GET http://localhost:9000/healthz`. Interactive docs at `http://localhost:9000/docs`. All `/ai/*` routes require the `x-internal-token` header that matches `INTERNAL_SHARED_SECRET`.
 
 ### API proxy for local dev
 
