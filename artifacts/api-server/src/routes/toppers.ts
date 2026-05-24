@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
-import { db, topperConfigTable, topperResultsTable, batchesTable, candidatesTable, assessmentScoresTable, assessmentsTable, attendanceTable } from "@workspace/db";
+import { db, topperConfigTable, topperResultsTable, batchesTable, candidatesTable, assessmentsTable, attendanceTable } from "@workspace/db";
 import { ComputeToppersBody, UpdateTopperConfigBody, ListToppersQueryParams } from "@workspace/api-zod";
 import { authMiddleware } from "../middlewares/auth";
 
@@ -41,40 +41,33 @@ router.post("/toppers/compute", authMiddleware, async (req, res): Promise<void> 
   }
   const { batchId } = parsed.data;
   const [config] = await db.select().from(topperConfigTable);
-  const assessmentWeight = config ? Number(config.assessmentWeight) / 100 : 0.6;
+  // Supabase config has sprint + api weights; treat their sum as the
+  // "assessment" weight to keep the legacy formula.
+  const assessmentWeight = config
+    ? (Number(config.sprintWeight ?? 0) + Number(config.apiWeight ?? 0)) / 100
+    : 0.5;
   const projectWeight = config ? Number(config.projectWeight) / 100 : 0.3;
-  const attendanceWeight = config ? Number(config.attendanceWeight) / 100 : 0.1;
+  const attendanceWeight = config ? Number(config.attendanceWeight) / 100 : 0.2;
 
   const candidates = await db.select().from(candidatesTable).where(eq(candidatesTable.batchId, batchId));
   const assessments = await db.select().from(assessmentsTable).where(eq(assessmentsTable.batchId, batchId));
-  const assessmentIds = assessments.map(a => a.id);
 
+  // In Supabase, each assessments row IS a per-candidate score, so filter
+  // directly by candidate_id.
   const candidateScores = await Promise.all(candidates.map(async (c) => {
-    const scores = await db.select().from(assessmentScoresTable).where(eq(assessmentScoresTable.candidateId, c.id));
-    const batchScores = scores.filter(s => assessmentIds.includes(s.assessmentId));
-    const nonProjectScores = batchScores.filter(s => {
-      const assessment = assessments.find(a => a.id === s.assessmentId);
-      return assessment && assessment.type !== "project_evaluation";
-    });
-    const projectScores = batchScores.filter(s => {
-      const assessment = assessments.find(a => a.id === s.assessmentId);
-      return assessment && assessment.type === "project_evaluation";
-    });
+    const myAssessments = assessments.filter(a => a.candidateId === c.id);
+    const nonProject = myAssessments.filter(a => a.type !== "project_evaluation");
+    const project = myAssessments.filter(a => a.type === "project_evaluation");
 
-    const assessmentAvg = nonProjectScores.length > 0
-      ? nonProjectScores.reduce((sum, s) => {
-          const assessment = assessments.find(a => a.id === s.assessmentId);
-          const max = assessment ? Number(assessment.maxScore) : 100;
-          return sum + (Number(s.score) / max) * 100;
-        }, 0) / nonProjectScores.length
+    const pct = (a: typeof assessmentsTable.$inferSelect) => {
+      const max = Number(a.maxScore) || 100;
+      return (Number(a.score) / max) * 100;
+    };
+    const assessmentAvg = nonProject.length > 0
+      ? nonProject.reduce((sum, a) => sum + pct(a), 0) / nonProject.length
       : 0;
-
-    const projectAvg = projectScores.length > 0
-      ? projectScores.reduce((sum, s) => {
-          const assessment = assessments.find(a => a.id === s.assessmentId);
-          const max = assessment ? Number(assessment.maxScore) : 100;
-          return sum + (Number(s.score) / max) * 100;
-        }, 0) / projectScores.length
+    const projectAvg = project.length > 0
+      ? project.reduce((sum, a) => sum + pct(a), 0) / project.length
       : 0;
 
     const attendanceRecords = await db.select().from(attendanceTable).where(eq(attendanceTable.candidateId, c.id));
@@ -108,14 +101,17 @@ router.post("/toppers/compute", authMiddleware, async (req, res): Promise<void> 
   res.json(enriched.sort((a, b) => a.rank - b.rank));
 });
 
-router.get("/topper-config", authMiddleware, async (req, res): Promise<void> => {
+router.get("/topper-config", authMiddleware, async (_req, res): Promise<void> => {
   let [config] = await db.select().from(topperConfigTable);
   if (!config) {
     [config] = await db.insert(topperConfigTable).values({}).returning();
   }
+  const assessmentWeight = Number(config.sprintWeight ?? 0) + Number(config.apiWeight ?? 0);
   res.json({
     id: config.id,
-    assessmentWeight: Number(config.assessmentWeight),
+    assessmentWeight,
+    sprintWeight: Number(config.sprintWeight ?? 0),
+    apiWeight: Number(config.apiWeight ?? 0),
     projectWeight: Number(config.projectWeight),
     attendanceWeight: Number(config.attendanceWeight),
     updatedAt: config.updatedAt,
@@ -133,13 +129,22 @@ router.patch("/topper-config", authMiddleware, async (req, res): Promise<void> =
     [config] = await db.insert(topperConfigTable).values({}).returning();
   }
   const updateData: Record<string, string> = {};
-  if (parsed.data.assessmentWeight !== undefined) updateData.assessmentWeight = String(parsed.data.assessmentWeight);
+  // Legacy clients send a single assessmentWeight; split it 50/50 across
+  // sprint + api so the new weights still sum correctly.
+  if (parsed.data.assessmentWeight !== undefined) {
+    const half = parsed.data.assessmentWeight / 2;
+    updateData.sprintWeight = String(half);
+    updateData.apiWeight = String(half);
+  }
   if (parsed.data.projectWeight !== undefined) updateData.projectWeight = String(parsed.data.projectWeight);
   if (parsed.data.attendanceWeight !== undefined) updateData.attendanceWeight = String(parsed.data.attendanceWeight);
   const [updated] = await db.update(topperConfigTable).set(updateData).where(eq(topperConfigTable.id, config.id)).returning();
+  const assessmentWeight = Number(updated.sprintWeight ?? 0) + Number(updated.apiWeight ?? 0);
   res.json({
     id: updated.id,
-    assessmentWeight: Number(updated.assessmentWeight),
+    assessmentWeight,
+    sprintWeight: Number(updated.sprintWeight ?? 0),
+    apiWeight: Number(updated.apiWeight ?? 0),
     projectWeight: Number(updated.projectWeight),
     attendanceWeight: Number(updated.attendanceWeight),
     updatedAt: updated.updatedAt,

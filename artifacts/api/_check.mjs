@@ -1,0 +1,13 @@
+import pg from "pg";
+const c = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+await c.connect();
+const maverickTables = ["users","batches","batch_trainers","candidates","attendance","assessments","assessment_scores","topper_config","topper_results","feedback","notifications","audit_logs"];
+const r = await c.query(`SELECT table_name FROM information_schema.tables WHERE table_schema='public' ORDER BY table_name`);
+const existing = r.rows.map(x => x.table_name);
+console.log("Existing tables in public schema:");
+console.log(existing.join("\n"));
+console.log("\nMaverick tables that already exist (would collide):");
+for (const t of maverickTables) if (existing.includes(t)) console.log("  CONFLICT:", t);
+console.log("\nMaverick tables that are new:");
+for (const t of maverickTables) if (!existing.includes(t)) console.log("  NEW:", t);
+await c.end();

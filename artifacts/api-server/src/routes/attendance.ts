@@ -51,7 +51,6 @@ router.post("/attendance", authMiddleware, async (req, res): Promise<void> => {
     batchId: parsed.data.batchId,
     date: dateStr,
     status: parsed.data.status,
-    remarks: parsed.data.remarks ?? null,
     submittedById: req.userId ?? null,
   }).returning();
   res.status(201).json(await enrichAttendance(record));
@@ -72,7 +71,6 @@ router.post("/attendance/bulk", authMiddleware, async (req, res): Promise<void> 
     batchId,
     date: dateStr,
     status: r.status,
-    remarks: r.remarks ?? null,
     submittedById: req.userId ?? null,
   }));
   const inserted = await db.insert(attendanceTable).values(values).returning();
