@@ -19,7 +19,9 @@ import Assessments from "@/pages/Assessments";
 import Attendance from "@/pages/Attendance";
 import Toppers from "@/pages/Toppers";
 import Feedback from "@/pages/Feedback";
-import Chatbot from "@/pages/Chatbot";
+// The Coordinator Copilot is intentionally NOT a routed page — it's a
+// slide-over panel mounted at Layout level and opened from the header
+// button or the sidebar entry. See components/CopilotContext.tsx.
 import Notifications from "@/pages/Notifications";
 import Users from "@/pages/Users";
 import AuditLog from "@/pages/AuditLog";
@@ -58,7 +60,10 @@ function Router() {
       <ProtectedRoute path="/attendance" component={Attendance} />
       <ProtectedRoute path="/toppers" component={Toppers} />
       <ProtectedRoute path="/feedback" component={Feedback} />
-      <ProtectedRoute path="/chatbot" component={Chatbot} />
+      {/* /copilot and /chatbot intentionally have no routes. The Copilot
+          is a slide-over panel — see Layout.tsx + CopilotContext.tsx.
+          Stale bookmarks fall through to the NotFound route below, which
+          is the right signal (the URL never represented real state). */}
       <ProtectedRoute path="/notifications" component={Notifications} />
       <ProtectedRoute path="/users" component={Users} allowedRoles={["admin"]} />
       <ProtectedRoute path="/audit" component={AuditLog} allowedRoles={["admin", "coordinator"]} />

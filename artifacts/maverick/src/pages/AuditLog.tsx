@@ -4,6 +4,31 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { format } from "date-fns";
 
+/**
+ * Render an audit log's details cell as a sentence rather than the raw
+ * JSON blob. Mirrors the formatter in `api-server/src/routes/dashboard.ts`
+ * — kept client-side because the legacy /audit-logs endpoint returns
+ * `details` as-is.
+ */
+function formatDetails(action: string, details: string | null | undefined): string {
+  if (!details) return "";
+  let parsed: Record<string, unknown> | null = null;
+  try {
+    parsed = JSON.parse(details) as Record<string, unknown>;
+  } catch {
+    return details; // not JSON — show as-is
+  }
+  if (action.startsWith("copilot.")) {
+    const q = typeof parsed?.query === "string" ? parsed.query : null;
+    const rows = typeof parsed?.row_count === "number" ? parsed.row_count : null;
+    if (q && rows != null) return `"${q}" — ${rows} row(s)`;
+    if (q) return `"${q}"`;
+    return "(Copilot)";
+  }
+  if (parsed && typeof parsed.summary === "string") return parsed.summary;
+  return details;
+}
+
 export default function AuditLog() {
   const { data: logs, isLoading } = useListAuditLogs();
 
@@ -47,7 +72,9 @@ export default function AuditLog() {
                       <span className="font-mono text-xs px-2 py-1 bg-muted rounded-md">{log.action}</span>
                     </TableCell>
                     <TableCell>{log.entityType} {log.entityId ? `#${log.entityId}` : ''}</TableCell>
-                    <TableCell className="text-sm text-muted-foreground">{log.details}</TableCell>
+                    <TableCell className="text-sm text-muted-foreground max-w-md break-words">
+                      {formatDetails(log.action, log.details)}
+                    </TableCell>
                   </TableRow>
                 ))}
               </TableBody>

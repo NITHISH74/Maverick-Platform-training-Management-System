@@ -13,12 +13,15 @@ const INTERNAL_TOKEN =
  * the AI service with the internal shared secret header.
  *
  * Routes:
- *   POST /api/ai/chatbot/query
  *   POST /api/ai/feedback/analyze
  *   POST /api/ai/notifications/generate
  *   POST /api/ai/agent/run
  *   GET  /api/ai/agent/tasks
  *   GET  /api/ai/agent/digest
+ *
+ * NOTE: The /api/ai/chatbot/query route was retired when the AI Chatbot
+ * feature was merged into the Coordinator Copilot. Use /api/copilot/query
+ * instead — see routes/copilot.ts.
  */
 async function proxy(req: any, res: any, method: "GET" | "POST"): Promise<void> {
   const subpath = req.path.replace(/^\/ai/, "");
@@ -49,7 +52,14 @@ async function proxy(req: any, res: any, method: "GET" | "POST"): Promise<void> 
   }
 }
 
-router.post("/ai/chatbot/query", authMiddleware, (req, res) => proxy(req, res, "POST"));
+// /ai/chatbot/query retired — see /api/copilot/query. We keep a 410 here so
+// any stale client code surfaces the migration clearly instead of 502'ing.
+router.post("/ai/chatbot/query", authMiddleware, (_req, res) => {
+  res.status(410).json({
+    error: "endpoint_retired",
+    detail: "The AI Chatbot has been merged into the Coordinator Copilot. Use POST /api/copilot/query instead.",
+  });
+});
 router.post("/ai/feedback/analyze", authMiddleware, (req, res) => proxy(req, res, "POST"));
 router.post("/ai/notifications/generate", authMiddleware, (req, res) => proxy(req, res, "POST"));
 router.post("/ai/agent/run", authMiddleware, (req, res) => proxy(req, res, "POST"));

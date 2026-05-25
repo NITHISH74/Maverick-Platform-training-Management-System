@@ -8,13 +8,19 @@ load_secrets()
 if settings.SENTRY_DSN:
     sentry_sdk.init(dsn=settings.SENTRY_DSN, traces_sample_rate=0.2)
 
-from app.routers import feedback, notifications, chatbot, agent  # noqa: E402
+# Note: `chatbot` was merged into `copilot` (see app/routers/copilot.py).
+# Its RAG helper was ported over; the legacy file is kept on disk for
+# reference but no longer registered.
+from app.routers import feedback, notifications, agent, copilot  # noqa: E402
 
 app = FastAPI(title="Maverick AI Service", version="1.0")
 
 
-def verify_internal(x_internal_token: str = Header(...)):
-    if x_internal_token != settings.INTERNAL_SHARED_SECRET:
+def verify_internal(x_internal_token: str | None = Header(default=None)):
+    # Missing header → 401 (not the FastAPI default 422 for missing dep).
+    # This matches the Copilot spec's "expect 401 without header" tests and
+    # is the correct status for a missing auth credential.
+    if not x_internal_token or x_internal_token != settings.INTERNAL_SHARED_SECRET:
         raise HTTPException(status_code=401, detail="invalid internal token")
 
 
@@ -31,15 +37,17 @@ app.include_router(
     dependencies=[Depends(verify_internal)],
 )
 app.include_router(
-    chatbot.router,
-    prefix="/ai/chatbot",
-    tags=["chatbot"],
-    dependencies=[Depends(verify_internal)],
-)
-app.include_router(
     agent.router,
     prefix="/ai/agent",
     tags=["agent"],
+    dependencies=[Depends(verify_internal)],
+)
+# Coordinator Copilot — NL→SQL over the platform schema. Prefix is /copilot
+# (not /ai/copilot) per the feature spec.
+app.include_router(
+    copilot.router,
+    prefix="/copilot",
+    tags=["copilot"],
     dependencies=[Depends(verify_internal)],
 )
 

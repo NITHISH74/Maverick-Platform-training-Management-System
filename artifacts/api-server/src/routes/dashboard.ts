@@ -125,16 +125,79 @@ router.get("/dashboard/attendance-trends", authMiddleware, async (req, res): Pro
   })));
 });
 
+/**
+ * Render an audit-log row as a single human-readable sentence.
+ *
+ * Background: Copilot writes its details as a JSON blob ({ "query": ..., ... })
+ * and a previous version of this route surfaced that blob verbatim. The raw
+ * JSON leaked into the Dashboard's Recent Activity card. This formatter now
+ * produces a sentence per action — Copilot rows show the natural-language
+ * question, everything else falls back to a generic "<action> on <entity>".
+ */
+function formatActivity(log: { action: string; entityType: string; entityId: number | null; details: string | null }): string {
+  const parseDetails = (): Record<string, unknown> | null => {
+    if (!log.details) return null;
+    try {
+      return JSON.parse(log.details) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  };
+
+  // Copilot actions all start with "copilot.".
+  if (log.action.startsWith("copilot.")) {
+    const d = parseDetails();
+    const q = typeof d?.query === "string" ? (d.query as string) : null;
+    const rowCount = typeof d?.row_count === "number" ? (d.row_count as number) : null;
+    const trimmed = q && q.length > 100 ? `${q.slice(0, 100)}…` : q;
+    if (log.action === "copilot.query" && trimmed) {
+      return rowCount != null
+        ? `Asked Copilot: "${trimmed}" — ${rowCount} row(s)`
+        : `Asked Copilot: "${trimmed}"`;
+    }
+    if (log.action === "copilot.query.rejected" && trimmed) {
+      return `Copilot blocked an unsafe query: "${trimmed}"`;
+    }
+    if (log.action === "copilot.query.timeout" && trimmed) {
+      return `Copilot timed out on: "${trimmed}"`;
+    }
+    if (log.action === "copilot.narrate") {
+      return `Generated a batch summary via Copilot`;
+    }
+    if (log.action === "copilot.help" && trimmed) {
+      return `Asked Copilot (how-to): "${trimmed}"`;
+    }
+    return `Used Coordinator Copilot`;
+  }
+
+  // Generic fallback — never surface raw JSON.
+  if (log.details) {
+    const d = parseDetails();
+    if (d && typeof d.summary === "string") return d.summary;
+  }
+  return `${log.action.replace(/_/g, " ")} on ${log.entityType}${log.entityId ? ` #${log.entityId}` : ""}`;
+}
+
 router.get("/dashboard/recent-activity", authMiddleware, async (req, res): Promise<void> => {
   const logs = await db.select().from(auditLogsTable);
-  const sorted = logs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 20);
+
+  // The Dashboard "Recent Activity" feed surfaces real coordinator
+  // activity — creating batches, marking attendance, updating candidates.
+  // Copilot interactions ("asked a question") are noise here; they are
+  // still recorded in audit_logs and visible on the dedicated /audit page
+  // for admins/coordinators who need the security trail.
+  const filtered = logs.filter(l => l.entityType !== "copilot");
+
+  const sorted = filtered
+    .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+    .slice(0, 20);
   const userIds = [...new Set(sorted.map(l => l.actorId).filter(Boolean))];
   const users = userIds.length > 0 ? await db.select().from(usersTable) : [];
 
   res.json(sorted.map(l => ({
     id: l.id,
     type: l.action,
-    description: l.details ?? `${l.action} on ${l.entityType}`,
+    description: formatActivity(l),
     entityType: l.entityType,
     entityId: l.entityId ?? null,
     actorName: l.actorId ? (users.find(u => u.id === l.actorId)?.name ?? null) : null,
