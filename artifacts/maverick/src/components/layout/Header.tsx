@@ -1,11 +1,13 @@
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
-import { LogOut, User } from "lucide-react";
+import { LogOut, Sparkles, User } from "lucide-react";
 import { useLogout } from "@workspace/api-client-react";
+import { useCopilot } from "@/components/CopilotContext";
 
 export function Header() {
   const { user, logout } = useAuth();
   const logoutMutation = useLogout();
+  const { openCopilot } = useCopilot();
 
   const handleLogout = () => {
     logoutMutation.mutate(undefined, {
@@ -21,6 +23,15 @@ export function Header() {
         Execution Platform
       </div>
       <div className="flex items-center gap-4">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={openCopilot}
+          data-testid="copilot-open"
+        >
+          <Sparkles className="h-4 w-4 mr-2 text-primary" />
+          Copilot
+        </Button>
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
           <User className="h-4 w-4" />
           <span>{user?.name}</span>

@@ -11,6 +11,7 @@ Enterprise **Training Management System (TMS)** for running training programmes 
 - [Key features](#key-features)
 - [Techniques used](#techniques-used)
 - [Tech stack](#tech-stack)
+- [Coordinator Copilot](#coordinator-copilot)
 - [Prerequisites](#prerequisites)
 - [Download and install](#download-and-install)
 - [Configuration and secrets](#configuration-and-secrets)
@@ -137,6 +138,7 @@ flowchart LR
 
 ## Key features
 
+- **Coordinator Copilot** — single conversational AI surface (slide-over from the header or full-screen at `/copilot`) that turns plain-English questions into safe `SELECT` queries against Supabase via Azure OpenAI GPT-4.1. Uses **live schema introspection** so the prompt can't drift from the DB, **RAG context** from `match_rag`, **per-caller batch-scope** enforcement (admin / coordinator / trainer), **SSE token streaming**, **table / number / bar** result rendering, **CSV export**, **Show-SQL toggle**, 👍/👎 feedback, and per-session tokens + INR cost tracking. Replaces the legacy AI Chatbot page. See [Coordinator Copilot](#coordinator-copilot).
 - **Role-based dashboards** — Admin, Coordinator, Trainer views with KPIs, attendance trends, pipeline funnel, recent activity.
 - **Batch lifecycle management** — create, assign trainers, status transitions (`planned → active → completed`).
 - **Candidate pipeline** — profile management with status flow (`active → discontinued / cleared / offered / onboarded`).
@@ -502,6 +504,128 @@ Maverick-Platform-training-Management-System/
 ├── pnpm-workspace.yaml
 └── replit.md                  # Extended dev notes (WCS toppers, gotchas)
 ```
+
+---
+
+## Coordinator Copilot
+
+The single conversational AI surface in Maverick. There is **one** UI — a 420 px slide-over from the right edge (full-width on mobile) — and **two triggers** that open it:
+
+- The **Copilot** button in the top header (visible on every page).
+- The **Coordinator Copilot** entry in the left sidebar.
+
+There is intentionally no dedicated `/copilot` page. The previous full-page route was removed because two surfaces for the same feature duplicated state and confused users about where to start; the slide-over keeps the user's current page context visible while they ask.
+
+The Copilot answers two kinds of questions:
+
+- **Data mode** — *"how many candidates are running this month?"*, *"top 5 candidates by assessment score"*. Generates a safe `SELECT` against Supabase and renders the result as a single number, a Recharts bar chart, or a table.
+- **Help mode** — *"how do I create a new batch?"*, *"where do I mark attendance?"*. Returns a numbered list of steps and a **"Take me there →"** button that uses `wouter` to navigate to the right page in the platform. No SQL is run.
+
+This feature **replaces the old AI Chatbot page**. The legacy `/api/ai/chatbot/query` endpoint now returns HTTP 410 with a migration hint; the RAG helper that the chatbot used has been ported into the Copilot so nothing was lost.
+
+**How it works**
+
+```
+User question
+   ↓
+React CopilotPanel  →  POST /api/copilot/query  (Express, port 8080)
+                          ↓  forwards with x-internal-token + req.userId
+                      POST /copilot/query        (FastAPI, port 9000)
+                          ↓
+            1) Schema card is built from information_schema (cached for the
+               process lifetime — no more drift between the prompt and DB).
+            2) Platform guide is appended — every route + how to perform
+               common tasks, so the model can answer "how do I X" questions.
+            3) RAG: top-5 embedding chunks pulled from Supabase `match_rag`
+               and prepended for grounding (best-effort).
+            4) Batch-scope hint: caller's allowed batch_ids are resolved
+               (admin → unrestricted; coordinator → batches they own;
+               trainer → batches via batch_trainers; unknown → empty deny).
+            5) GPT-4.1 plans → {mode: "data"|"help", ...}.
+            6a) DATA: sql_validator.py blocks non-whitelisted SELECTs,
+                _enforce_scope_in_sql() requires a batch_id from the
+                allow-list when scoped tables are touched, psycopg2 runs
+                the SQL with SET LOCAL statement_timeout = 5000, then
+                GPT-4.1 narrates the rows token-by-token via SSE.
+            6b) HELP: no SQL is run. The server returns steps + an
+                allow-listed navigate_to route. The UI renders a Help card
+                with a "Take me there →" button.
+            7) audit_logs + copilot_usage rows written (no SQL in audit
+               details — it would leak into Recent Activity).
+                          ↓
+             SSE: event: meta → event: token (×N) → event: done
+                          ↓
+             Panel renders chart_type / mode:
+               "help"   → ordered list of steps + "Take me there" button
+               "number" → big centered figure
+               "table"  → HTML table (first 50 rows, with CSV export ≥ 10 rows)
+               "bar"    → Recharts BarChart
+             Per-bubble extras: 👍/👎 feedback, clickable follow-up chips.
+             Header: Clear chat (trash icon).
+             SQL and token-cost are intentionally hidden from end users
+             (still tracked server-side for admin via /usage-stats).
+```
+
+**Endpoints**
+
+| Method | Path | Description |
+|--------|------|-------------|
+| POST | `/api/copilot/query` | NL → SQL → execute → stream narrative (SSE) |
+| POST | `/api/copilot/narrate` | 150-word executive summary for one batch |
+| POST | `/api/copilot/feedback` | Thumbs-up/down logger (writes `copilot_usage.helpful`) |
+| GET  | `/api/copilot/usage-stats` | Today's tokens, INR cost, top 5 queries (admin only) |
+
+**Safety — three layers**
+
+1. **Static validator** (`services/ai/app/utils/sql_validator.py`):
+   - Must start with `SELECT`.
+   - Blocks `DROP / DELETE / UPDATE / INSERT / TRUNCATE / ALTER / CREATE / EXEC / EXECUTE` as whole-word matches (so `updated_at` is fine).
+   - Rejects any `FROM` / `JOIN` target outside `{batches, candidates, attendance, assessments, feedback, audit_logs, users}`.
+   - Rejects multi-statement input.
+2. **Per-caller batch scope** (`_resolve_batch_scope` + `_enforce_scope_in_sql`):
+   - Admin → no restriction.
+   - Coordinator → batches where `coordinator_id = user_id`.
+   - Trainer → batches via `batch_trainers.trainer_id = user_id`.
+   - Unknown / no-batches → any SQL touching `attendance / candidates / assessments / feedback` is refused with `"caller has no batch access"`.
+3. **Postgres `SET LOCAL statement_timeout = 5000`** caps execution at 5 s.
+
+**Schema introspection** — the column list in the planning prompt is built at first use by querying `information_schema.columns` for the whitelisted tables. Hand-curated **business rules** (enum values, naming gotchas, attendance-percent formula, date-filter idioms) live alongside in `BUSINESS_RULES` because the DB can't describe those. This kills the class of bug where the prompt and the live schema drift apart.
+
+**Platform-aware help mode** — when the model classifies a question as a how-to / navigation question (e.g. *"How do I create a new batch?"*), it returns a JSON shape with `mode: "help"`, an ordered `steps` array, and a `navigate_to` URL (allow-listed client-side against the real route table — see `HelpCard` in `CopilotPanel.tsx`). The panel renders a "Take me there →" button that uses `wouter` to jump to the right page and closes the slide-over so the user lands unobstructed. Audit rows are written as `copilot.help` (no SQL involved) for the dedicated `/audit` admin page.
+
+**Activity feed hygiene** — `audit_logs` records every Copilot interaction, but the Dashboard's **Recent Activity** card filters them out (`entityType !== 'copilot'`). That card is for *real* coordinator work — creating batches, marking attendance, importing candidates — and "asked a question" is noise there. The full Copilot trail is still visible to admins on `/audit`.
+
+**RAG context** — when Supabase has a `match_rag` RPC available, the user's question is embedded with the same Azure embedding deployment used by the legacy chatbot, the top 5 matching chunks are pulled, and the joined text is prepended to the system prompt for grounding. Failure is silent — RAG is best-effort, never blocks the request.
+
+**Data tables**
+
+- `copilot_usage` — per-call ledger (query text, generated SQL, row count, prompt / completion / total tokens, estimated INR cost, helpful flag). Migration: [`lib/db/migrations/0002_copilot_usage.sql`](lib/db/migrations/0002_copilot_usage.sql), applied with `python scripts/apply_copilot_migration.py`.
+- `audit_logs` — every Copilot call writes `action='copilot.query'` (or `.rejected` / `.timeout` / `.narrate`) with the query, SQL, row count, and user id in the details JSON.
+
+**Cost model** — `total_tokens / 1000 × 0.166` INR (GPT-4.1 at ≈ $0.002 per 1 K tokens × 83 INR/USD). The panel footer shows running `Session: X tokens · ₹Y.YY`. The admin-only `usage-stats` endpoint surfaces today's totals and top 5 queries.
+
+**Suggested starter queries** (shown as chips when the conversation is empty):
+
+1. "Which batches have attendance below 80% this week?"
+2. "Who are the top 5 candidates in the current batch?"
+3. "Generate a summary for this batch"
+4. "Show attendance trends for the past month"
+
+**Tests** — `pytest services/ai/tests` runs 8 tests: 6 SQL-validator unit tests + 2 router auth-gate tests. All pass.
+
+**Files**
+
+| Path | Role |
+|------|------|
+| `services/ai/app/utils/sql_validator.py` | Safety validator (whitelist + keyword block) |
+| `services/ai/app/routers/copilot.py` | FastAPI router (`/copilot/*`) — schema introspection, RAG, batch-scope, SSE |
+| `services/ai/tests/test_sql_validator.py` | Validator unit tests |
+| `services/ai/tests/test_copilot_router.py` | Router 401 tests |
+| `lib/db/migrations/0002_copilot_usage.sql` | `copilot_usage` table |
+| `scripts/apply_copilot_migration.py` | One-shot migration runner |
+| `artifacts/api-server/src/routes/copilot.ts` | Node proxy (SSE pipe + admin RBAC) |
+| `artifacts/maverick/src/components/CopilotPanel.tsx` | React slide-over panel |
+| `artifacts/maverick/src/components/layout/Header.tsx` | Hosts the **Copilot** button |
 
 ---
 

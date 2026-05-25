@@ -18,6 +18,7 @@ import {
   BarChart2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCopilot } from "@/components/CopilotContext";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["admin", "coordinator", "trainer"] },
@@ -27,7 +28,10 @@ const NAV_ITEMS = [
   { href: "/assessments", label: "Assessments", icon: ClipboardCheck, roles: ["admin", "coordinator", "trainer"] },
   { href: "/toppers", label: "Toppers", icon: Trophy, roles: ["admin", "coordinator"] },
   { href: "/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin", "coordinator", "trainer"] },
-  { href: "/chatbot", label: "AI Chatbot", icon: Sparkles, roles: ["admin", "coordinator", "trainer"] },
+  // Coordinator Copilot — special-cased below: clicking opens the slide-over
+  // panel instead of navigating. `href: null` distinguishes it from regular
+  // routed nav items so the click handler knows what to do.
+  { href: null as string | null, label: "Coordinator Copilot", icon: Sparkles, roles: ["admin", "coordinator", "trainer"] },
   { href: "/reports", label: "Reports", icon: BarChart2, roles: ["admin", "coordinator"] },
   { href: "/notifications", label: "Notifications", icon: Bell, roles: ["admin", "coordinator", "trainer"] },
   { href: "/users", label: "Users", icon: Shield, roles: ["admin"] },
@@ -43,6 +47,7 @@ interface SidebarProps {
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [location] = useLocation();
   const { user } = useAuth();
+  const { openCopilot } = useCopilot();
 
   if (!user) return null;
 
@@ -75,22 +80,43 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <div className="flex-1 overflow-y-auto py-4">
         <nav className={cn("space-y-1", collapsed ? "px-2" : "px-3")}>
           {filteredItems.map((item) => {
-            const isActive = location.startsWith(item.href);
+            const isActive = item.href ? location.startsWith(item.href) : false;
+            const className = cn(
+              "flex items-center rounded-md text-sm font-medium transition-colors w-full",
+              collapsed ? "justify-center px-0 py-2" : "gap-3 px-3 py-2",
+              isActive
+                ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
+            );
+            const inner = (
+              <>
+                <item.icon className={cn("h-4 w-4 shrink-0", isActive ? "text-primary" : "text-sidebar-foreground/50")} />
+                {!collapsed && item.label}
+              </>
+            );
+            // Items without an href are action buttons (e.g. opens the
+            // Copilot slide-over).
+            if (!item.href) {
+              return (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={openCopilot}
+                  className={cn(className, "text-left")}
+                  title={collapsed ? item.label : undefined}
+                >
+                  {inner}
+                </button>
+              );
+            }
             return (
               <Link
                 key={item.href}
                 href={item.href}
-                className={cn(
-                  "flex items-center rounded-md text-sm font-medium transition-colors",
-                  collapsed ? "justify-center px-0 py-2" : "gap-3 px-3 py-2",
-                  isActive
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                )}
+                className={className}
                 title={collapsed ? item.label : undefined}
               >
-                <item.icon className={cn("h-4 w-4 shrink-0", isActive ? "text-primary" : "text-sidebar-foreground/50")} />
-                {!collapsed && item.label}
+                {inner}
               </Link>
             );
           })}

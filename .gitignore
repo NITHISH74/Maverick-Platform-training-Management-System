@@ -59,3 +59,11 @@ Thumbs.db
 **/.venv/
 **/__pycache__/
 *.pyc
+
+# Local dev / harness state — not for the repo
+.claude/
+ai.out.log
+api.out.log
+api.err.log
+fe.out.log
+fe.err.log

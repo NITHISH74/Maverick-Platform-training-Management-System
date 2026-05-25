@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     AGENT_VERBOSE: bool = False
 
     KEY_VAULT_URL: str = ""
+    DATABASE_URL: str = ""  # used by app/routers/copilot.py
     SUPABASE_URL: str = ""
     SUPABASE_SERVICE_KEY: str = ""
     # Azure OpenAI

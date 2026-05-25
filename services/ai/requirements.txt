@@ -13,6 +13,7 @@ langchain-openai==0.2.10
 crewai==0.80.0
 crewai-tools==0.14.0
 sqlparse==0.5.1
+psycopg2-binary==2.9.12
 azure-identity==1.18.0
 azure-keyvault-secrets==4.8.0
 sentry-sdk[fastapi]==2.14.0
