@@ -2,6 +2,7 @@ import express, { type Express } from "express";
 import cors from "cors";
 import pinoHttp from "pino-http";
 import router from "./routes";
+import internalRouter from "./routes/internal";
 import { logger } from "./lib/logger";
 
 const app: Express = express();
@@ -48,5 +49,10 @@ app.get("/", (_req, res) => {
 });
 
 app.use("/api", router);
+
+// Internal-only routes: x-internal-token guarded (no Bearer auth). The
+// Python AI service calls these for fan-out email + on-demand scans.
+// Deliberately NOT under /api so the user-facing auth layer never sees them.
+app.use("/internal", internalRouter);
 
 export default app;
