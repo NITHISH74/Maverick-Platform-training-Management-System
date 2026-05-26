@@ -13,12 +13,13 @@
 import { useEffect, useState } from "react";
 import { useParams, Link } from "wouter";
 import { Layout } from "@/components/layout/Layout";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ArrowLeft, BrainCircuit } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { ArrowLeft, BrainCircuit, Sparkles } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { TrainerGraph, type TrainerGraphData } from "@/components/TrainerGraph";
-// TrainerScoreCard is wired in Feature 2 (AI Trainer Scoring Engine).
+import { TrainerScoreCard } from "@/components/TrainerScoreCard";
 
 export default function TrainerDetail() {
   const params = useParams<{ id: string }>();
@@ -62,7 +63,10 @@ export default function TrainerDetail() {
           <p className="text-muted-foreground">Trainer profile · ID {trainerId}</p>
         </div>
 
-        {/* AI Trainer Score Card slot — wired in Feature 2. */}
+        {/* --- AI effectiveness score (Feature 2) — sits ABOVE the graph per spec --- */}
+        {trainerId && graph && graph.nodes.some((n) => n.type === "batch") && (
+          <TrainerScoreSection trainerId={trainerId} graph={graph} />
+        )}
 
         {/* --- Intelligence Graph section heading + visualization (Feature 1) --- */}
         <div>
@@ -93,4 +97,49 @@ export default function TrainerDetail() {
   );
 }
 
-// Feature 2 (TrainerScoreCardSection) will be added in the next step.
+// ---------------------------------------------------------------------------
+// Trainer Score section. A trainer typically owns multiple batches; we show
+// one TrainerScoreCard at a time and let the user switch between batches
+// via the row of toggle buttons. First batch is selected by default.
+// ---------------------------------------------------------------------------
+
+function TrainerScoreSection({ trainerId, graph }: { trainerId: string; graph: TrainerGraphData }) {
+  const batches = graph.nodes.filter((n) => n.type === "batch");
+  const [activeBatchId, setActiveBatchId] = useState<string>(() =>
+    batches[0]?.id.replace(/^batch:/, "") ?? "",
+  );
+
+  if (batches.length === 0 || !activeBatchId) return null;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Sparkles className="h-4 w-4 text-primary" />
+          AI effectiveness score
+        </CardTitle>
+        {batches.length > 1 && (
+          <div className="flex flex-wrap gap-2 pt-2">
+            {batches.map((b) => {
+              const bid = b.id.replace(/^batch:/, "");
+              const active = bid === activeBatchId;
+              return (
+                <Button
+                  key={b.id}
+                  size="sm"
+                  variant={active ? "default" : "outline"}
+                  onClick={() => setActiveBatchId(bid)}
+                >
+                  {b.label}
+                </Button>
+              );
+            })}
+          </div>
+        )}
+      </CardHeader>
+      <CardContent>
+        <TrainerScoreCard trainerId={trainerId} batchId={activeBatchId} />
+      </CardContent>
+    </Card>
+  );
+}
