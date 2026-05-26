@@ -48,7 +48,9 @@ function internalAuth(req: Request, res: Response, next: NextFunction): void {
 // we'd render — the simpler pre-rendered path is what the Python tool
 // uses now.
 // ---------------------------------------------------------------------------
-router.post("/internal/email/send", internalAuth, async (req: Request, res: Response): Promise<void> => {
+// Path is /email/send — mounted at /internal in app.ts, full URL becomes
+// POST /internal/email/send. (Avoids the double-prefix bug.)
+router.post("/email/send", internalAuth, async (req: Request, res: Response): Promise<void> => {
   const b = req.body ?? {};
   if (!b.to || !b.subject || !b.body) {
     res.status(400).json({ error: "to, subject, body are required" });
@@ -69,7 +71,8 @@ router.post("/internal/email/send", internalAuth, async (req: Request, res: Resp
 // POST /internal/monitoring/scan — invoke the rule engine directly.
 // This is what the AI-side fallback path can call when CrewAI is unavailable.
 // ---------------------------------------------------------------------------
-router.post("/internal/monitoring/scan", internalAuth, async (req: Request, res: Response): Promise<void> => {
+// POST /internal/monitoring/scan — full URL after the /internal mount.
+router.post("/monitoring/scan", internalAuth, async (req: Request, res: Response): Promise<void> => {
   try {
     const result = await runMonitoringScan({
       runId: req.body?.run_id,

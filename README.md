@@ -8,6 +8,7 @@ Enterprise **Training Management System (TMS)** for running training programmes 
 
 - [Architecture](#architecture)
 - [Application flow](#application-flow)
+- [Autonomous Batch Monitoring Agent](#autonomous-batch-monitoring-agent)
 - [Key features](#key-features)
 - [Techniques used](#techniques-used)
 - [Tech stack](#tech-stack)
@@ -138,6 +139,7 @@ flowchart LR
 
 ## Key features
 
+- **Autonomous Batch Monitoring Agent** — rule-driven background agent that scans every running batch on a schedule (or on demand), evaluates 8 health rules, creates `monitoring_alerts`, and fans out plain-text emails to trainer + coordinator (admin sees the dashboard, not the emails). Idempotent per `(batch, candidate, kind, day)`. Per-role scope on the dashboard. Console transport for dev, nodemailer for prod. See [Autonomous Batch Monitoring Agent](#autonomous-batch-monitoring-agent).
 - **Coordinator Copilot** — single conversational AI surface (slide-over from the header or full-screen at `/copilot`) that turns plain-English questions into safe `SELECT` queries against Supabase via Azure OpenAI GPT-4.1. Uses **live schema introspection** so the prompt can't drift from the DB, **RAG context** from `match_rag`, **per-caller batch-scope** enforcement (admin / coordinator / trainer), **SSE token streaming**, **table / number / bar** result rendering, **CSV export**, **Show-SQL toggle**, 👍/👎 feedback, and per-session tokens + INR cost tracking. Replaces the legacy AI Chatbot page. See [Coordinator Copilot](#coordinator-copilot).
 - **Role-based dashboards** — Admin, Coordinator, Trainer views with KPIs, attendance trends, pipeline funnel, recent activity.
 - **Batch lifecycle management** — create, assign trainers, status transitions (`planned → active → completed`).
@@ -626,6 +628,123 @@ React CopilotPanel  →  POST /api/copilot/query  (Express, port 8080)
 | `artifacts/api-server/src/routes/copilot.ts` | Node proxy (SSE pipe + admin RBAC) |
 | `artifacts/maverick/src/components/CopilotPanel.tsx` | React slide-over panel |
 | `artifacts/maverick/src/components/layout/Header.tsx` | Hosts the **Copilot** button |
+
+---
+
+## Autonomous Batch Monitoring Agent
+
+A rule-driven agent that scans every running batch on a schedule (or on demand), creates `monitoring_alerts` rows when health metrics breach thresholds, and fans out emails to the trainer + coordinator. Per spec, **admins see everything in the dashboard but are NOT emailed by default**. Coordinators can trigger an on-demand scan; admins additionally control thresholds and the email log.
+
+**Routes**
+
+| Method | Path | Roles | Description |
+|--------|------|-------|-------------|
+| POST | `/api/monitoring/run` | admin, coordinator | Trigger an on-demand scan. Inserts an `agent_runs` row, runs the 8 rules across all `running` batches, creates alerts, fans out emails. |
+| GET  | `/api/monitoring/alerts` | all | Scoped alert inbox (`?status=open&severity=HIGH&kind=…&batchId=…`). |
+| PATCH | `/api/monitoring/alerts/:id` | all (own scope) | `{action: "acknowledge"\|"resolve"\|"dismiss"}` |
+| GET  | `/api/monitoring/batch-risk` | all | Per-batch risk summary from `batch_risk_summary` view, scoped to the caller. |
+| GET  | `/api/monitoring/batch-risk/:id` | all | Drill-down: batch + summary + last 50 alerts. |
+| GET  | `/api/monitoring/config` | all | Read thresholds + scheduler cron. |
+| PATCH | `/api/monitoring/config` | admin | Update thresholds + scheduler config. |
+| GET  | `/api/monitoring/email-log` | admin | Every email the agent dispatched. |
+| POST | `/internal/email/send` | x-internal-token | Used by the Python AI service to render-and-send via the Node email pipeline. |
+| POST | `/internal/monitoring/scan` | x-internal-token | Used by the Python AI fallback path to delegate a scan to Node. |
+
+**The 8 rules**
+
+1. `attendance_not_uploaded` — no attendance row for today.
+2. `low_attendance_pct` — 14-day batch attendance below `attendance_batch_threshold_pct` (default 75 %).
+3. `attendance_drop` — last-7-days vs prior-7-days drop above `attendance_drop_threshold_pct` (default 10 %).
+4. `low_clearance_rate` — assessment pass rate below `clearance_threshold_pct` (default 60 %). CRITICAL severity.
+5. `assessment_overdue` — assessment scheduled but no upload past the deadline.
+6. `continuous_absence` — candidate absent for `consecutive_absence_days` (default 3) days in a row.
+7. `low_individual_attendance` — candidate 14-day attendance below `attendance_candidate_threshold_pct` (default 70 %).
+8. `low_assessment_marks` — latest assessment score below `assessment_pass_threshold_pct` (default 40 %).
+
+**Idempotency** — the engine refuses to create a second open alert for the same `(batch_id, candidate_id, alert_kind, day)` tuple. Running the scan twice in a row produces **0 new alerts** on the second pass (verified in smoke test #5).
+
+**Scheduler** — disabled by default. `ENABLE_MONITORING_SCHEDULER=true` boots the cron loop, which reads its expression from `monitoring_config.scheduler_cron` (default `0 11 * * *`). The scheduler prefers the Python `/ai/agent/run` path and falls back to the Node rule engine if AI is unreachable. Requires `node-cron` (already in `artifacts/api-server/package.json`).
+
+**Email transport** — `lib/email.ts` uses **nodemailer** when SMTP env vars are set; otherwise a **console transport** that pretty-prints the email to stdout. Every send (success OR failure) is persisted to `monitoring_email_log` with the provider tag.
+
+**Recipient rules** (`monitoring_config`)
+
+| Flag | Default | Effect |
+|------|---------|--------|
+| `email_trainer` | true | Trainers assigned to the batch via `batch_trainers` get every alert for that batch. |
+| `email_coordinator` | true | The batch's `coordinator_id` gets every alert. |
+| `email_admin` | **false** | Admins are NOT emailed by default — they see everything in the UI. Flip to true if needed. |
+
+**AI summary** — v1 uses a deterministic composer in `composeBatchSummary()` so demos are byte-stable. A follow-up will optionally pipe the per-batch report through `/ai/agent/run` for a real LLM summary.
+
+**Frontend**
+
+- Compact **Monitoring** card on the main Dashboard (worst risk level + open-alert count + "View →" link).
+- Full page at **`/monitoring`** with four tabs: Overview, Alerts inbox, Email log (admin), Config (admin).
+- Drill-down at **`/monitoring/batch/:batchId`**.
+- Sidebar entry "Monitoring" with the `ShieldAlert` icon, visible to all 3 roles.
+
+**Files**
+
+| Path | Role |
+|------|------|
+| `lib/db/migrations/0003_batch_monitoring_agent.sql` | 3 tables + view + 5 functions + RLS policies |
+| `lib/db/src/schema/monitoring.ts` | Drizzle schema |
+| `scripts/apply_monitoring_migration.py` | One-shot migration runner |
+| `artifacts/api-server/src/lib/email.ts` | nodemailer + console fallback; writes to `monitoring_email_log` |
+| `artifacts/api-server/src/lib/monitoring-engine.ts` | The 8 rules + `runMonitoringScan()` |
+| `artifacts/api-server/src/lib/monitoring-recipients.ts` | Trainer / coordinator / admin resolver |
+| `artifacts/api-server/src/lib/monitoring-templates.ts` | Plain-text email templates |
+| `artifacts/api-server/src/lib/scheduler.ts` | node-cron loop, opt-in via env |
+| `artifacts/api-server/src/routes/monitoring.ts` | 8 user-facing REST endpoints |
+| `artifacts/api-server/src/routes/internal.ts` | `x-internal-token` routes for the Python AI service |
+| `artifacts/maverick/src/lib/monitoring-api.ts` | TanStack Query hooks |
+| `artifacts/maverick/src/pages/Monitoring.tsx` | Main page (4 tabs) |
+| `artifacts/maverick/src/pages/BatchRiskDetail.tsx` | Drill-down |
+| `artifacts/maverick/src/components/monitoring/{AlertCard,BatchRiskCard,RiskBadge}.tsx` | UI primitives |
+
+**Env vars**
+
+| Var | Default | Effect |
+|---|---|---|
+| `ENABLE_MONITORING_SCHEDULER` | unset | `true` starts the cron loop at boot |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` / `SMTP_FROM` / `SMTP_SECURE` | unset | If set, real emails via nodemailer; otherwise console transport |
+| `AI_SERVICE_URL` | `http://localhost:9000` | Used by `scheduler.ts` when it prefers the Python LLM agent |
+| `AI_INTERNAL_TOKEN` / `INTERNAL_SHARED_SECRET` | `smoke-test-secret-1234567890` | Shared secret for `/internal/*` routes |
+| `AI_AGENT_TIMEOUT_MS` | 90000 | Scheduler's AI call timeout |
+
+**Demo flow for judges**
+
+1. Open `/monitoring`. The Overview tab shows per-batch risk cards.
+2. Click **Run scan now** (top right). A toast reports e.g. *"1 batch scanned, 1 new alert, 3 emails sent"*.
+3. Switch to **Alerts** tab — the new alert appears with Acknowledge / Resolve / Dismiss buttons.
+4. Click a batch card on Overview → drill-down at `/monitoring/batch/:id` shows the batch's full alert history + current health metrics.
+5. As **admin**, open **Email log** tab — every fanned-out email is listed (recipient + role + subject + provider).
+6. As **admin**, open **Config** tab — adjust thresholds; the next scan picks them up.
+7. Run scan a second time → digest reports **0 new alerts** (idempotency).
+
+**Rollback**
+
+```bash
+# Drop the 3 tables + view + 4 functions added by 0003 — leaves the rest
+# of the DB untouched.
+psql "$DATABASE_URL" <<'SQL'
+DROP VIEW IF EXISTS batch_risk_summary;
+DROP TABLE IF EXISTS monitoring_alerts, monitoring_email_log, monitoring_config CASCADE;
+DROP FUNCTION IF EXISTS batch_attendance_drop_pct(int) CASCADE;
+DROP FUNCTION IF EXISTS candidate_attendance_pct(int, int) CASCADE;
+DROP FUNCTION IF EXISTS batch_candidates_below_attendance(int, numeric, int) CASCADE;
+DROP FUNCTION IF EXISTS batch_candidates_low_assessment(int, numeric) CASCADE;
+DROP FUNCTION IF EXISTS batch_trainer_emails(int) CASCADE;
+SQL
+# Then: git revert <V4 merge commit> on the app side.
+```
+
+**Known limitations**
+
+1. RLS policies in migration 0003 are installed but bypassed at runtime — the api-server connects with the service-role connection string, so the policies are defense-in-depth for any direct PostgREST consumers, not the app itself.
+2. The `aiSummary` field on each alert/digest is composed deterministically; piping through the FastAPI service for a real LLM narrative is a follow-up.
+3. SMTP not configured → emails go through the console transport. They're still logged with `provider='console'` and visible on the Email log tab.
 
 ---
 
