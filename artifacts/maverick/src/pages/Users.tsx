@@ -9,8 +9,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { UserPlus, Edit2, ShieldAlert } from "lucide-react";
+import { UserPlus, Edit2, ShieldAlert, BrainCircuit } from "lucide-react";
 import { format } from "date-fns";
+import { Link } from "wouter";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -192,6 +193,13 @@ export default function Users() {
                     </TableCell>
                     <TableCell className="text-sm text-muted-foreground">{format(new Date(u.createdAt), "MMM d, yyyy")}</TableCell>
                     <TableCell className="text-right">
+                      {u.role === "trainer" && (
+                        <Link href={`/trainers/${u.id}`}>
+                          <Button variant="ghost" size="icon" title="Open trainer profile">
+                            <BrainCircuit className="h-4 w-4 text-primary" />
+                          </Button>
+                        </Link>
+                      )}
                       <Button variant="ghost" size="icon" title="Edit User">
                         <Edit2 className="h-4 w-4 text-muted-foreground" />
                       </Button>

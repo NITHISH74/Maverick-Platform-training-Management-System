@@ -29,6 +29,7 @@ import Settings from "@/pages/Settings";
 import Reports from "@/pages/Reports";
 import Monitoring from "@/pages/Monitoring";
 import BatchRiskDetail from "@/pages/BatchRiskDetail";
+import TrainerDetail from "@/pages/TrainerDetail";
 
 // Root path handler. When Auth0 redirects back from a login, the URL is
 // `/?code=...&state=...` — if we blindly <Redirect to="/dashboard">, wouter
@@ -77,6 +78,11 @@ function Router() {
           in routes/monitoring.ts via visibleBatchIds(). */}
       <ProtectedRoute path="/monitoring" component={Monitoring} allowedRoles={["admin", "coordinator", "trainer"]} />
       <ProtectedRoute path="/monitoring/batch/:batchId" component={BatchRiskDetail} allowedRoles={["admin", "coordinator", "trainer"]} />
+
+      {/* Trainer profile — hosts the Trainer Intelligence Graph (F1) and
+          AI Trainer Score Card (F2). Admin/coordinator-only because it
+          exposes cross-trainer comparisons. */}
+      <ProtectedRoute path="/trainers/:id" component={TrainerDetail} allowedRoles={["admin", "coordinator"]} />
 
       <Route component={NotFound} />
     </Switch>
