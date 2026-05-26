@@ -55,4 +55,16 @@ app.use("/api", router);
 // Deliberately NOT under /api so the user-facing auth layer never sees them.
 app.use("/internal", internalRouter);
 
+// Optional cron scheduler for the autonomous monitoring agent. OFF by
+// default so dev/demo runs don't fire emails on a schedule; set
+// ENABLE_MONITORING_SCHEDULER=true to start it. The schedule itself is
+// read from monitoring_config.scheduler_cron (default 0 11 * * *).
+if (process.env.ENABLE_MONITORING_SCHEDULER === "true") {
+  // Lazy import so the scheduler module (and its node-cron dep) only
+  // loads when actually enabled.
+  void import("./lib/scheduler").then(({ startMonitoringScheduler }) => {
+    void startMonitoringScheduler();
+  });
+}
+
 export default app;
