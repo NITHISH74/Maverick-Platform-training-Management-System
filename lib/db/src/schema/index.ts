@@ -7,3 +7,4 @@ export * from "./toppers";
 export * from "./feedback";
 export * from "./notifications";
 export * from "./audit";
+export * from "./monitoring";
