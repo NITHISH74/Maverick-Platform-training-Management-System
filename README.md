@@ -748,6 +748,101 @@ SQL
 
 ---
 
+## V5 — Trainer Intelligence, AI Scoring, Feedback Intelligence, Demo Test Suite
+
+V5 adds four orthogonal features to the platform. Every one of them is **additive only** — no existing table, route, or component was modified; only new migrations (`0004_trainer_scores.sql`, `0005_feedback_intelligence.sql`), new routes (`/api/trainers/*`, `/api/trainer-scoring/*`, `/api/feedback-intelligence/*`), and new FastAPI routers (`trainer_scoring`, `feedback_intelligence`) were added.
+
+### Feature 1 — Trainer Intelligence Graph
+
+A 3-tier SVG network at `/trainers/:id` showing trainer → batches → candidates with hover tooltips, click-to-highlight per batch, and 4 summary KPI tiles. Pure SVG layout (no D3, no new packages — recharts and shadcn/ui only).
+
+| Path | Role |
+|---|---|
+| `GET /api/trainers/:trainerId/graph` | All roles via auth middleware; returns `{trainer, nodes, edges, summary}` |
+| `artifacts/api-server/src/routes/trainers.ts` | Drizzle query: trainer → batch_trainers → batches → candidates, with attendance % per batch and AVG(score/max_score)*100 per candidate |
+| `artifacts/maverick/src/components/TrainerGraph.tsx` | Color-coded SVG (trainer=blue / batch status / candidate score band) |
+| `artifacts/maverick/src/pages/TrainerDetail.tsx` | Page mount, admin + coordinator only |
+| `artifacts/maverick/src/pages/Users.tsx` | BrainCircuit icon next to each trainer row → `/trainers/:id` |
+
+### Feature 2 — AI Trainer Scoring Engine
+
+GPT-4.1 scores a trainer's effectiveness on a per-batch basis using attendance %, assessment pass rate, and feedback samples. Persists to `trainer_scores` (UPSERT on `(trainer_id, batch_id)`) and writes an `audit_logs` row per scoring. UI is a recharts donut + 3 horizontal sub-score bars + reasoning + strengths/improvements columns + Re-score button.
+
+| Path | Role |
+|---|---|
+| `lib/db/migrations/0004_trainer_scores.sql` | New table — id uuid PK, trainer_id+batch_id FK to users/batches, scores + jsonb breakdown |
+| `services/ai/app/routers/trainer_scoring.py` | `POST /trainer-scoring/score`, `GET /trainer-scoring/score/{trainer_id}/{batch_id}` |
+| `artifacts/api-server/src/routes/trainer-scoring.ts` | Node proxy (auth gate + x-internal-token fan-out) |
+| `artifacts/maverick/src/components/TrainerScoreCard.tsx` | Donut + bars + reasoning + strengths/improvements + Re-score |
+
+### Feature 3 — Feedback Intelligence Engine
+
+GPT-4.1 extracts themes, an overall sentiment, a sentiment score, and prioritized recommended actions from a batch's feedback. Persists to a NEW table `feedback_intelligence` (kept separate from the legacy `feedback_analysis` from migration 0001 — the project rule is "do not modify existing tables").
+
+Empty states surfaced cleanly:
+- Never analysed → `Analyze Feedback` CTA
+- < 2 feedback rows → amber alert *"Add at least 2 feedback entries to enable AI analysis"*
+- analyzing → *"Analyzing feedback with AI…"* with pulse animation
+
+| Path | Role |
+|---|---|
+| `lib/db/migrations/0005_feedback_intelligence.sql` | id uuid PK · UNIQUE(batch_id) · themes / recommended_actions jsonb |
+| `services/ai/app/routers/feedback_intelligence.py` | `POST /feedback-intelligence/analyze`, `GET /feedback-intelligence/analysis/{batch_id}` |
+| `artifacts/api-server/src/routes/feedback-intelligence.ts` | Node proxy |
+| `artifacts/maverick/src/components/FeedbackIntelligenceCard.tsx` | Summary + sentiment badge + themes grid + recommended actions list |
+| `artifacts/maverick/src/pages/BatchDetail.tsx` | Card appended at the bottom (no existing tabs/sections removed) |
+
+### Feature 4 — Demo Test Suite for the Monitoring Agent
+
+Three TypeScript scripts under `scripts/src/` that seed a self-contained scenario the monitoring agent will fire on, trigger a scan, and clean up afterwards. Uses `pg` directly (the same driver Drizzle uses), no new packages.
+
+```bash
+pnpm run demo:seed           # inserts 1 coordinator + 1 batch + 5 candidates + 35 attendance + 1 overdue assessment
+pnpm run demo:trigger        # POSTs /api/monitoring/run, prints the test report
+pnpm run demo:cleanup        # default mark mode — prepends "[ARCHIVED]" to demo rows (safe)
+pnpm run demo:cleanup:delete # hard delete in FK-safe order
+```
+
+Trigger output captures: alerts created (across all 8 monitoring rules), emails fanned out (provider tag + per-recipient), `agent_runs` count (monitoring agent's audit trail), and SMTP misconfiguration warnings. Saves inserted IDs to `scripts/demo-test-ids.json` so the trigger and cleanup scripts can locate the same rows.
+
+---
+
+## Running locally — secret-key checklist
+
+The platform needs **three** env files (none committed to git). After cloning, copy each `.env.example` to `.env` in the same directory and fill in real values:
+
+| File | Vars |
+|---|---|
+| `.env` (repo root) | `DATABASE_URL`, `PORT`, `NODE_ENV`, `INTERNAL_SHARED_SECRET` / `AI_INTERNAL_TOKEN` (same value), `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_ANON_KEY` |
+| `services/ai/.env` | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT` (e.g. `gpt-4.1`), `AZURE_OPENAI_API_VERSION` (e.g. `2024-12-01-preview`), `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `DATABASE_URL`, `INTERNAL_SHARED_SECRET` (must match root) |
+| `artifacts/maverick/.env` | `VITE_AUTH0_DOMAIN`, `VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE` |
+
+**Once env files are in place:**
+
+```powershell
+# DB migrations (first-time only)
+python scripts/apply_copilot_migration.py
+python scripts/apply_monitoring_migration.py
+python scripts/apply_trainer_scores_migration.py
+python scripts/apply_feedback_intelligence_migration.py
+
+# Terminal 1 — Node API
+pnpm --filter @workspace/api-server run build
+pnpm --filter @workspace/api-server run start
+
+# Terminal 2 — Frontend
+$env:PORT="5173"; $env:BASE_PATH="/"
+pnpm --filter @workspace/maverick run dev
+
+# Terminal 3 — Python AI service
+cd services/ai
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 9000
+```
+
+**Verify:** `http://localhost:8080/api/healthz` → `{"status":"ok"}`, `http://localhost:5173/` → 200, `http://localhost:9000/healthz` → `{"ok":true}`.
+
+---
+
 ## Product modules
 
 | Module | Description |

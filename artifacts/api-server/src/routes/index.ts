@@ -17,6 +17,7 @@ import copilotRouter from "./copilot";
 import monitoringRouter from "./monitoring";
 import trainersRouter from "./trainers";
 import trainerScoringRouter from "./trainer-scoring";
+import feedbackIntelligenceRouter from "./feedback-intelligence";
 
 const router: IRouter = Router();
 
@@ -38,5 +39,6 @@ router.use(copilotRouter);
 router.use(monitoringRouter);
 router.use(trainersRouter);
 router.use(trainerScoringRouter);
+router.use(feedbackIntelligenceRouter);
 
 export default router;

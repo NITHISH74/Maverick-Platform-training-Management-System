@@ -11,7 +11,7 @@ if settings.SENTRY_DSN:
 # Note: `chatbot` was merged into `copilot` (see app/routers/copilot.py).
 # Its RAG helper was ported over; the legacy file is kept on disk for
 # reference but no longer registered.
-from app.routers import feedback, notifications, agent, copilot, trainer_scoring  # noqa: E402
+from app.routers import feedback, notifications, agent, copilot, trainer_scoring, feedback_intelligence  # noqa: E402
 
 app = FastAPI(title="Maverick AI Service", version="1.0")
 
@@ -56,6 +56,14 @@ app.include_router(
     trainer_scoring.router,
     prefix="/trainer-scoring",
     tags=["trainer-scoring"],
+    dependencies=[Depends(verify_internal)],
+)
+# Feedback Intelligence Engine (F3) — POST /feedback-intelligence/analyze and
+# GET /feedback-intelligence/analysis/{batch_id}.
+app.include_router(
+    feedback_intelligence.router,
+    prefix="/feedback-intelligence",
+    tags=["feedback-intelligence"],
     dependencies=[Depends(verify_internal)],
 )
 

@@ -10,6 +10,7 @@ import { format } from "date-fns";
 import { Users, Calendar, UserCheck, Trophy } from "lucide-react";
 import { Link } from "wouter";
 import { Progress } from "@/components/ui/progress";
+import { FeedbackIntelligenceCard } from "@/components/FeedbackIntelligenceCard";
 
 export default function BatchDetail({ params }: { params: { id: string } }) {
   const id = parseInt(params.id, 10);
@@ -299,6 +300,13 @@ export default function BatchDetail({ params }: { params: { id: string } }) {
             </Card>
           </TabsContent>
         </Tabs>
+
+        {/* Feedback Intelligence (F3) — appended at the bottom; no existing
+            batch-detail content was removed or reordered. */}
+        <div>
+          <h2 className="text-lg font-semibold mb-3">Feedback Intelligence</h2>
+          <FeedbackIntelligenceCard batchId={id} />
+        </div>
       </div>
     </Layout>
   );
