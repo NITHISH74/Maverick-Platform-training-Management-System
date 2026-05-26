@@ -15,6 +15,7 @@ import reportsRouter from "./reports";
 import aiRouter from "./ai";
 import copilotRouter from "./copilot";
 import monitoringRouter from "./monitoring";
+import trainersRouter from "./trainers";
 
 const router: IRouter = Router();
 
@@ -34,5 +35,6 @@ router.use(reportsRouter);
 router.use(aiRouter);
 router.use(copilotRouter);
 router.use(monitoringRouter);
+router.use(trainersRouter);
 
 export default router;
