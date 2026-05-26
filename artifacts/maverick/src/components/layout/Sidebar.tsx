@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   BarChart2,
+  ShieldAlert,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCopilot } from "@/components/CopilotContext";
@@ -28,6 +29,9 @@ const NAV_ITEMS = [
   { href: "/assessments", label: "Assessments", icon: ClipboardCheck, roles: ["admin", "coordinator", "trainer"] },
   { href: "/toppers", label: "Toppers", icon: Trophy, roles: ["admin", "coordinator"] },
   { href: "/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin", "coordinator", "trainer"] },
+  // Batch Monitoring — autonomous risk-scan agent. Visible to all 3 roles;
+  // server-side scoping (visibleBatchIds) hides batches the user can't access.
+  { href: "/monitoring", label: "Monitoring", icon: ShieldAlert, roles: ["admin", "coordinator", "trainer"] },
   // Coordinator Copilot — special-cased below: clicking opens the slide-over
   // panel instead of navigating. `href: null` distinguishes it from regular
   // routed nav items so the click handler knows what to do.

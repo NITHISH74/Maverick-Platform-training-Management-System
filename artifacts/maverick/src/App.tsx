@@ -27,6 +27,8 @@ import Users from "@/pages/Users";
 import AuditLog from "@/pages/AuditLog";
 import Settings from "@/pages/Settings";
 import Reports from "@/pages/Reports";
+import Monitoring from "@/pages/Monitoring";
+import BatchRiskDetail from "@/pages/BatchRiskDetail";
 
 // Root path handler. When Auth0 redirects back from a login, the URL is
 // `/?code=...&state=...` — if we blindly <Redirect to="/dashboard">, wouter
@@ -69,6 +71,12 @@ function Router() {
       <ProtectedRoute path="/audit" component={AuditLog} allowedRoles={["admin", "coordinator"]} />
       <ProtectedRoute path="/settings" component={Settings} allowedRoles={["admin", "coordinator"]} />
       <ProtectedRoute path="/reports" component={Reports} allowedRoles={["admin", "coordinator"]} />
+
+      {/* Autonomous batch monitoring agent — risk dashboard + alert inbox.
+          Visible to all three roles; row-level scoping is enforced server-side
+          in routes/monitoring.ts via visibleBatchIds(). */}
+      <ProtectedRoute path="/monitoring" component={Monitoring} allowedRoles={["admin", "coordinator", "trainer"]} />
+      <ProtectedRoute path="/monitoring/batch/:batchId" component={BatchRiskDetail} allowedRoles={["admin", "coordinator", "trainer"]} />
 
       <Route component={NotFound} />
     </Switch>

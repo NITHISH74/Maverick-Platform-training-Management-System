@@ -1,12 +1,15 @@
 import { useState } from "react";
+import { Link } from "wouter";
 import { useGetDashboardSummary, useGetRecentActivity, useGetCandidateStatusBreakdown, useGetAttendanceTrends } from "@workspace/api-client-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Users, GraduationCap, CalendarCheck, TrendingUp, AlertTriangle, Activity } from "lucide-react";
+import { Users, GraduationCap, CalendarCheck, TrendingUp, AlertTriangle, Activity, ShieldAlert, ArrowRight } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Layout } from "@/components/layout/Layout";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar, Legend, PieChart, Pie, Cell } from "recharts";
 import { format } from "date-fns";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useBatchRiskSummaries } from "@/lib/monitoring-api";
+import { RiskBadge } from "@/components/monitoring/RiskBadge";
 
 const COLORS = ['#0ea5e9', '#22c55e', '#eab308', '#f97316', '#ef4444', '#8b5cf6'];
 
@@ -153,6 +156,11 @@ export default function Dashboard() {
           </Card>
         </div>
 
+        {/* Compact monitoring summary — surfaces the Autonomous Batch
+            Monitoring Agent inside the main Dashboard. Full UI lives at
+            /monitoring; this card is the at-a-glance entry point. */}
+        <MonitoringSummaryCard />
+
         <div className="grid gap-4 md:grid-cols-7">
           <Card className="md:col-span-4">
             <CardHeader>
@@ -266,5 +274,60 @@ export default function Dashboard() {
         </div>
       </div>
     </Layout>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Compact monitoring card embedded in the main Dashboard.
+//
+// Reuses useBatchRiskSummaries() from the monitoring frontend client. Shows
+// the worst-risk batch + the open-alert count, and links to /monitoring for
+// the full UI. Renders nothing while loading (no skeleton noise on the
+// main page); shows a neutral "All systems nominal" line when there's no
+// data.
+// ---------------------------------------------------------------------------
+
+const RISK_RANK: Record<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL", number> = {
+  LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3,
+};
+
+function MonitoringSummaryCard() {
+  const { data: summaries, isLoading } = useBatchRiskSummaries();
+  if (isLoading) return null;
+  const rows = summaries ?? [];
+  const openAlerts = rows.reduce((sum, r) => sum + (r.openAlerts ?? 0), 0);
+  const worst = rows.reduce<typeof rows[number] | null>((acc, r) => {
+    if (!acc) return r;
+    return RISK_RANK[r.riskLevel] > RISK_RANK[acc.riskLevel] ? r : acc;
+  }, null);
+
+  return (
+    <Card className="border-l-4 border-l-orange-500/60">
+      <CardContent className="flex items-center justify-between gap-4 p-4">
+        <div className="flex items-center gap-3 min-w-0">
+          <div className="rounded-full bg-orange-500/10 p-2 text-orange-600">
+            <ShieldAlert className="h-5 w-5" />
+          </div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-semibold text-sm">Batch monitoring</span>
+              {worst && <RiskBadge level={worst.riskLevel} />}
+            </div>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              {rows.length === 0
+                ? "No running batches to monitor."
+                : openAlerts > 0
+                  ? `${openAlerts} open alert${openAlerts === 1 ? "" : "s"} across ${rows.length} batch${rows.length === 1 ? "" : "es"}${worst && worst.riskLevel !== "LOW" ? ` — worst: ${worst.batchCode}` : ""}.`
+                  : `All ${rows.length} batch${rows.length === 1 ? "" : "es"} healthy. Agent is running.`}
+            </p>
+          </div>
+        </div>
+        <Link href="/monitoring">
+          <a className="inline-flex items-center gap-1 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted whitespace-nowrap">
+            View <ArrowRight className="h-3.5 w-3.5" />
+          </a>
+        </Link>
+      </CardContent>
+    </Card>
   );
 }
