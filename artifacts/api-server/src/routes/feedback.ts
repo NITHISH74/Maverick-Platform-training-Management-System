@@ -1,8 +1,9 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db, feedbackTable, batchesTable, candidatesTable } from "@workspace/db";
 import { SubmitFeedbackBody, TriggerFeedbackEmailBody, ListFeedbackQueryParams, GetFeedbackSummaryQueryParams } from "@workspace/api-zod";
 import { authMiddleware } from "../middlewares/auth";
+import { getTrainerBatchIds } from "../lib/rbac";
 
 const router: IRouter = Router();
 
@@ -40,8 +41,22 @@ async function enrichFeedback(f: typeof feedbackTable.$inferSelect) {
 
 router.get("/feedback", authMiddleware, async (req, res): Promise<void> => {
   const params = ListFeedbackQueryParams.safeParse(req.query);
-  const records = params.success && params.data.batchId
-    ? await db.select().from(feedbackTable).where(eq(feedbackTable.batchId, params.data.batchId))
+  const requestedBatchId = params.success ? params.data.batchId : undefined;
+
+  // Trainer scoping — only feedback for batches they're assigned to.
+  let trainerBatches: number[] | null = null;
+  if (req.userRole === "trainer" && req.userId) {
+    trainerBatches = await getTrainerBatchIds(req.userId);
+    if (trainerBatches.length === 0) { res.json([]); return; }
+    if (requestedBatchId && !trainerBatches.includes(requestedBatchId)) { res.json([]); return; }
+  }
+
+  const conditions = [];
+  if (requestedBatchId) conditions.push(eq(feedbackTable.batchId, requestedBatchId));
+  else if (trainerBatches) conditions.push(inArray(feedbackTable.batchId, trainerBatches));
+
+  const records = conditions.length > 0
+    ? await db.select().from(feedbackTable).where(and(...conditions))
     : await db.select().from(feedbackTable);
   const enriched = await Promise.all(records.map(enrichFeedback));
   res.json(enriched);
@@ -77,9 +92,26 @@ router.post("/feedback/trigger", authMiddleware, async (req, res): Promise<void>
 router.get("/feedback/summary", authMiddleware, async (req, res): Promise<void> => {
   const params = GetFeedbackSummaryQueryParams.safeParse(req.query);
   const batchId = params.success ? params.data.batchId : undefined;
+
+  // Trainer scoping
+  let trainerBatches: number[] | null = null;
+  if (req.userRole === "trainer" && req.userId) {
+    trainerBatches = await getTrainerBatchIds(req.userId);
+    if (trainerBatches.length === 0) {
+      res.json({ batchId: batchId ?? 0, totalResponses: 0, avgContentRating: 0, avgTrainerRating: 0, avgOverallRating: 0, positiveCount: 0, neutralCount: 0, negativeCount: 0 });
+      return;
+    }
+    if (batchId && !trainerBatches.includes(batchId)) {
+      res.json({ batchId, totalResponses: 0, avgContentRating: 0, avgTrainerRating: 0, avgOverallRating: 0, positiveCount: 0, neutralCount: 0, negativeCount: 0 });
+      return;
+    }
+  }
+
   const records = batchId
     ? await db.select().from(feedbackTable).where(eq(feedbackTable.batchId, batchId))
-    : await db.select().from(feedbackTable);
+    : trainerBatches
+      ? await db.select().from(feedbackTable).where(inArray(feedbackTable.batchId, trainerBatches))
+      : await db.select().from(feedbackTable);
 
   const totalResponses = records.length;
   const rated = records.filter(r => r.rating != null);

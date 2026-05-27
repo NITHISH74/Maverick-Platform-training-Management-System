@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useListBatches, useCreateBatch, useListUsers } from "@workspace/api-client-react";
+import { useAuth } from "@/hooks/useAuth";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -19,6 +20,7 @@ function CreateBatchDialog({ open, onClose }: { open: boolean; onClose: () => vo
   const createBatch = useCreateBatch();
   const { data: users } = useListUsers();
   const coordinators = users?.filter(u => u.role === "coordinator") ?? [];
+  const trainers = users?.filter(u => u.role === "trainer") ?? [];
 
   const [form, setForm] = useState({
     name: "",
@@ -28,10 +30,15 @@ function CreateBatchDialog({ open, onClose }: { open: boolean; onClose: () => vo
     capacity: "30",
     coordinatorId: "",
   });
+  const [trainerIds, setTrainerIds] = useState<number[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const set = (field: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setForm(f => ({ ...f, [field]: e.target.value }));
+
+  const toggleTrainer = (id: number) => {
+    setTrainerIds(prev => prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,6 +56,7 @@ function CreateBatchDialog({ open, onClose }: { open: boolean; onClose: () => vo
           endDate: form.endDate,
           capacity: parseInt(form.capacity) || 30,
           coordinatorId: form.coordinatorId ? parseInt(form.coordinatorId) : undefined,
+          trainerIds: trainerIds.length > 0 ? trainerIds : undefined,
         },
       },
       {
@@ -56,6 +64,7 @@ function CreateBatchDialog({ open, onClose }: { open: boolean; onClose: () => vo
           queryClient.invalidateQueries({ queryKey: ["listBatches"] });
           onClose();
           setForm({ name: "", program: "", startDate: "", endDate: "", capacity: "30", coordinatorId: "" });
+          setTrainerIds([]);
         },
         onError: (err: unknown) => {
           setError(err instanceof Error ? err.message : "Failed to create batch.");
@@ -110,6 +119,28 @@ function CreateBatchDialog({ open, onClose }: { open: boolean; onClose: () => vo
               </Select>
             </div>
           </div>
+          <div className="space-y-1.5">
+            <Label>Assign Trainers (optional — can be set later)</Label>
+            <div className="max-h-32 overflow-y-auto border rounded-md p-2 space-y-1">
+              {trainers.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No trainers found.</p>
+              ) : trainers.map(t => (
+                <label key={t.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/40 rounded px-1 py-0.5">
+                  <input
+                    type="checkbox"
+                    checked={trainerIds.includes(t.id)}
+                    onChange={() => toggleTrainer(t.id)}
+                    className="h-4 w-4"
+                  />
+                  <span>{t.name}</span>
+                  <span className="text-xs text-muted-foreground">({t.email})</span>
+                </label>
+              ))}
+            </div>
+            {trainerIds.length > 0 && (
+              <p className="text-xs text-muted-foreground">{trainerIds.length} trainer(s) selected</p>
+            )}
+          </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
@@ -126,6 +157,8 @@ function CreateBatchDialog({ open, onClose }: { open: boolean; onClose: () => vo
 export default function Batches() {
   const [showCreate, setShowCreate] = useState(false);
   const { data: batches, isLoading } = useListBatches();
+  const { user } = useAuth();
+  const canManage = user?.role === "admin" || user?.role === "coordinator";
 
   return (
     <Layout>
@@ -133,12 +166,16 @@ export default function Batches() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Batches</h1>
-            <p className="text-muted-foreground">Manage and monitor all training batches.</p>
+            <p className="text-muted-foreground">
+              {canManage ? "Manage and monitor all training batches." : "Your assigned batches."}
+            </p>
           </div>
-          <Button onClick={() => setShowCreate(true)}>
-            <Plus className="mr-2 h-4 w-4" />
-            Create Batch
-          </Button>
+          {canManage && (
+            <Button onClick={() => setShowCreate(true)}>
+              <Plus className="mr-2 h-4 w-4" />
+              Create Batch
+            </Button>
+          )}
         </div>
 
         <CreateBatchDialog open={showCreate} onClose={() => setShowCreate(false)} />

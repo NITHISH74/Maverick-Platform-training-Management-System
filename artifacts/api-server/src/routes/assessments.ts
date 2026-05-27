@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db, assessmentsTable, batchesTable, candidatesTable } from "@workspace/db";
 import {
   CreateAssessmentBody, UpdateAssessmentBody, GetAssessmentParams, UpdateAssessmentParams,
@@ -8,6 +8,7 @@ import {
   ListAssessmentScoresQueryParams, BulkUploadAssessmentScoresBody,
 } from "@workspace/api-zod";
 import { authMiddleware } from "../middlewares/auth";
+import { getTrainerBatchIds, writeAudit } from "../lib/rbac";
 
 const router: IRouter = Router();
 
@@ -27,6 +28,7 @@ async function enrichAssessment(a: typeof assessmentsTable.$inferSelect) {
     scheduledDate: a.scheduledDate,
     maxScore: Number(a.maxScore),
     description: null,
+    uploadedBy: a.uploadedBy ?? null,
     createdAt: a.createdAt,
     updatedAt: a.updatedAt,
   };
@@ -56,18 +58,26 @@ async function enrichScore(s: typeof assessmentsTable.$inferSelect) {
 // GET /assessments returns a deduplicated assessment header view.
 router.get("/assessments", authMiddleware, async (req, res): Promise<void> => {
   const params = ListAssessmentsQueryParams.safeParse(req.query);
-  let rows: typeof assessmentsTable.$inferSelect[];
-  if (params.success) {
-    const { batchId, type } = params.data;
-    const conditions: ReturnType<typeof eq>[] = [];
-    if (batchId) conditions.push(eq(assessmentsTable.batchId, batchId));
-    if (type) conditions.push(eq(assessmentsTable.type, type));
-    rows = conditions.length > 0
-      ? await db.select().from(assessmentsTable).where(and(...conditions))
-      : await db.select().from(assessmentsTable);
-  } else {
-    rows = await db.select().from(assessmentsTable);
+  const batchId = params.success ? params.data.batchId : undefined;
+  const typeFilter = params.success ? params.data.type : undefined;
+
+  // Trainer scoping
+  let trainerBatches: number[] | null = null;
+  if (req.userRole === "trainer" && req.userId) {
+    trainerBatches = await getTrainerBatchIds(req.userId);
+    if (trainerBatches.length === 0) { res.json([]); return; }
+    if (batchId && !trainerBatches.includes(batchId)) { res.json([]); return; }
   }
+
+  const conditions: ReturnType<typeof eq>[] = [];
+  if (batchId) conditions.push(eq(assessmentsTable.batchId, batchId));
+  else if (trainerBatches) conditions.push(inArray(assessmentsTable.batchId, trainerBatches));
+  if (typeFilter) conditions.push(eq(assessmentsTable.type, typeFilter));
+
+  const rows = conditions.length > 0
+    ? await db.select().from(assessmentsTable).where(and(...conditions))
+    : await db.select().from(assessmentsTable);
+
   // Dedupe to (batchId, title, type, scheduledDate) and keep the earliest id.
   const seen = new Map<string, typeof assessmentsTable.$inferSelect>();
   for (const r of rows) {
@@ -79,12 +89,63 @@ router.get("/assessments", authMiddleware, async (req, res): Promise<void> => {
   res.json(enriched);
 });
 
-router.post("/assessments", authMiddleware, async (_req, res): Promise<void> => {
-  // Creating "headers" doesn't map cleanly to Supabase's per-candidate row
-  // shape; this endpoint is left as a no-op until the API contract is
-  // rewritten for the new shape.
-  void CreateAssessmentBody;
-  res.status(501).json({ error: "Use /assessment-scores to insert per-candidate rows on Supabase." });
+// Creating an assessment really means: insert one row per candidate in the
+// batch with score=0, uploadedBy=current user. Trainers can do this for their
+// own batches; admin/coordinator unrestricted.
+router.post("/assessments", authMiddleware, async (req, res): Promise<void> => {
+  const parsed = CreateAssessmentBody.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  const { batchId, title, type, scheduledDate, maxScore } = parsed.data;
+
+  // Trainer must own the batch.
+  if (req.userRole === "trainer" && req.userId) {
+    const trainerBatches = await getTrainerBatchIds(req.userId);
+    if (!trainerBatches.includes(batchId)) {
+      res.status(403).json({ error: "Forbidden: batch not assigned to you" });
+      return;
+    }
+  }
+
+  // Look up all candidates in the batch so we can create one row per candidate.
+  const batchCandidates = await db.select({ id: candidatesTable.id }).from(candidatesTable).where(eq(candidatesTable.batchId, batchId));
+  if (batchCandidates.length === 0) {
+    res.status(400).json({ error: "Batch has no candidates — add candidates before creating assessments." });
+    return;
+  }
+
+  const scheduledDateStr = scheduledDate instanceof Date
+    ? scheduledDate.toISOString().split("T")[0]
+    : String(scheduledDate);
+  const today = new Date().toISOString().split("T")[0];
+
+  const values = batchCandidates.map(c => ({
+    batchId,
+    candidateId: c.id,
+    title,
+    type,
+    scheduledDate: scheduledDateStr,
+    maxScore: String(maxScore ?? 100),
+    score: "0",
+    passed: null as boolean | null,
+    uploadedDate: today,
+    uploadedBy: req.userId ?? null,
+  }));
+  const inserted = await db.insert(assessmentsTable).values(values).returning();
+  const [firstRow] = inserted;
+
+  await writeAudit({
+    actorId: req.userId,
+    action: "create",
+    entityType: "assessment",
+    entityId: firstRow.id,
+    details: { batchId, title, type, scheduledDate: scheduledDateStr, candidateCount: inserted.length },
+  });
+
+  // Return the deduplicated header (one assessment, not N rows).
+  res.status(201).json(await enrichAssessment(firstRow));
 });
 
 router.get("/assessments/:id", authMiddleware, async (req, res): Promise<void> => {
@@ -112,17 +173,37 @@ router.patch("/assessments/:id", authMiddleware, async (req, res): Promise<void>
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+
+  // Look up the row first so we can apply ownership + scope rules.
+  const [existing] = await db.select().from(assessmentsTable).where(eq(assessmentsTable.id, params.data.id));
+  if (!existing) {
+    res.status(404).json({ error: "Assessment not found" });
+    return;
+  }
+  // Trainer can only edit their own assessments.
+  if (req.userRole === "trainer") {
+    if (existing.uploadedBy !== req.userId) {
+      res.status(403).json({ error: "Forbidden: you can only edit assessments you created" });
+      return;
+    }
+  }
+
   const updateData: Record<string, unknown> = {};
   if (parsed.data.title !== undefined) updateData.title = parsed.data.title;
   if (parsed.data.type !== undefined) updateData.type = parsed.data.type;
   if (parsed.data.scheduledDate !== undefined) updateData.scheduledDate = parsed.data.scheduledDate;
   if (parsed.data.maxScore !== undefined) updateData.maxScore = String(parsed.data.maxScore);
-  const [row] = await db.update(assessmentsTable).set(updateData).where(eq(assessmentsTable.id, params.data.id)).returning();
-  if (!row) {
-    res.status(404).json({ error: "Assessment not found" });
-    return;
-  }
-  res.json(await enrichAssessment(row));
+
+  // Apply update to all sibling rows that share the same assessment header,
+  // so the dedup view stays consistent.
+  await db.update(assessmentsTable).set(updateData).where(and(
+    eq(assessmentsTable.batchId, existing.batchId),
+    eq(assessmentsTable.title, existing.title),
+    eq(assessmentsTable.type, existing.type),
+    eq(assessmentsTable.scheduledDate, existing.scheduledDate),
+  ));
+  const [refreshed] = await db.select().from(assessmentsTable).where(eq(assessmentsTable.id, params.data.id));
+  res.json(await enrichAssessment(refreshed));
 });
 
 router.delete("/assessments/:id", authMiddleware, async (req, res): Promise<void> => {
@@ -131,29 +212,67 @@ router.delete("/assessments/:id", authMiddleware, async (req, res): Promise<void
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [row] = await db.delete(assessmentsTable).where(eq(assessmentsTable.id, params.data.id)).returning();
-  if (!row) {
+  const [existing] = await db.select().from(assessmentsTable).where(eq(assessmentsTable.id, params.data.id));
+  if (!existing) {
     res.status(404).json({ error: "Assessment not found" });
     return;
   }
+  // Trainer can only delete assessments they uploaded.
+  if (req.userRole === "trainer") {
+    if (existing.uploadedBy !== req.userId) {
+      res.status(403).json({ error: "Forbidden: you can only delete assessments you created" });
+      return;
+    }
+  }
+
+  // Delete all sibling rows that make up this assessment.
+  const deleted = await db.delete(assessmentsTable).where(and(
+    eq(assessmentsTable.batchId, existing.batchId),
+    eq(assessmentsTable.title, existing.title),
+    eq(assessmentsTable.type, existing.type),
+    eq(assessmentsTable.scheduledDate, existing.scheduledDate),
+  )).returning();
+
+  await writeAudit({
+    actorId: req.userId,
+    action: "delete",
+    entityType: "assessment",
+    entityId: existing.id,
+    details: {
+      batchId: existing.batchId,
+      title: existing.title,
+      type: existing.type,
+      scheduledDate: existing.scheduledDate,
+      rowsDeleted: deleted.length,
+    },
+  });
+
   res.sendStatus(204);
 });
 
 router.get("/assessment-scores", authMiddleware, async (req, res): Promise<void> => {
   const params = ListAssessmentScoresQueryParams.safeParse(req.query);
-  let rows: typeof assessmentsTable.$inferSelect[];
-  if (params.success) {
-    const { assessmentId, candidateId, batchId } = params.data;
-    const conditions: ReturnType<typeof eq>[] = [];
-    if (assessmentId) conditions.push(eq(assessmentsTable.id, assessmentId));
-    if (candidateId) conditions.push(eq(assessmentsTable.candidateId, candidateId));
-    if (batchId) conditions.push(eq(assessmentsTable.batchId, batchId));
-    rows = conditions.length > 0
-      ? await db.select().from(assessmentsTable).where(and(...conditions))
-      : await db.select().from(assessmentsTable);
-  } else {
-    rows = await db.select().from(assessmentsTable);
+  const assessmentId = params.success ? params.data.assessmentId : undefined;
+  const candidateId = params.success ? params.data.candidateId : undefined;
+  const batchId = params.success ? params.data.batchId : undefined;
+
+  // Trainer scoping
+  let trainerBatches: number[] | null = null;
+  if (req.userRole === "trainer" && req.userId) {
+    trainerBatches = await getTrainerBatchIds(req.userId);
+    if (trainerBatches.length === 0) { res.json([]); return; }
+    if (batchId && !trainerBatches.includes(batchId)) { res.json([]); return; }
   }
+
+  const conditions: ReturnType<typeof eq>[] = [];
+  if (assessmentId) conditions.push(eq(assessmentsTable.id, assessmentId));
+  if (candidateId) conditions.push(eq(assessmentsTable.candidateId, candidateId));
+  if (batchId) conditions.push(eq(assessmentsTable.batchId, batchId));
+  else if (trainerBatches) conditions.push(inArray(assessmentsTable.batchId, trainerBatches));
+
+  const rows = conditions.length > 0
+    ? await db.select().from(assessmentsTable).where(and(...conditions))
+    : await db.select().from(assessmentsTable);
   const enriched = await Promise.all(rows.map(enrichScore));
   res.json(enriched);
 });

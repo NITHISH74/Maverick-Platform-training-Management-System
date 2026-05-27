@@ -225,7 +225,11 @@ export default function Attendance() {
   const queryClient = useQueryClient();
   const bulkCreate = useBulkCreateAttendance();
 
-  const { data: batches } = useListBatches({ status: "running" });
+  // Show batches in any pre-completed state so newly-created (planned) batches
+  // are also pickable in the dropdown. Completed/archived batches are hidden
+  // client-side below.
+  const { data: allBatches } = useListBatches({});
+  const batches = (allBatches ?? []).filter(b => b.status !== "completed" && b.status !== "archived");
 
   const { data: records, isLoading, refetch } = useListAttendance(
     { batchId: selectedBatch ? parseInt(selectedBatch) : undefined, date },

@@ -1,12 +1,13 @@
 import { Router, type IRouter } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db, candidatesTable, batchesTable } from "@workspace/db";
 import {
   CreateCandidateBody, UpdateCandidateBody, GetCandidateParams, UpdateCandidateParams,
   DeleteCandidateParams, UpdateCandidateStatusParams, UpdateCandidateStatusBody, ListCandidatesQueryParams,
   BulkImportCandidatesBody,
 } from "@workspace/api-zod";
-import { authMiddleware } from "../middlewares/auth";
+import { authMiddleware, requireRole } from "../middlewares/auth";
+import { getTrainerBatchIds, writeAudit } from "../lib/rbac";
 
 const router: IRouter = Router();
 
@@ -21,26 +22,38 @@ async function enrichCandidate(c: typeof candidatesTable.$inferSelect) {
 
 router.get("/candidates", authMiddleware, async (req, res): Promise<void> => {
   const params = ListCandidatesQueryParams.safeParse(req.query);
-  let candidates: typeof candidatesTable.$inferSelect[];
-  if (params.success) {
-    const { batchId, status } = params.data;
-    if (batchId && status) {
-      candidates = await db.select().from(candidatesTable).where(and(eq(candidatesTable.batchId, batchId), eq(candidatesTable.status, status)));
-    } else if (batchId) {
-      candidates = await db.select().from(candidatesTable).where(eq(candidatesTable.batchId, batchId));
-    } else if (status) {
-      candidates = await db.select().from(candidatesTable).where(eq(candidatesTable.status, status));
-    } else {
-      candidates = await db.select().from(candidatesTable);
+  const batchId = params.success ? params.data.batchId : undefined;
+  const status = params.success ? params.data.status : undefined;
+
+  // Trainer scoping: restrict to candidates in batches the trainer is assigned to.
+  let trainerBatchIds: number[] | null = null;
+  if (req.userRole === "trainer" && req.userId) {
+    trainerBatchIds = await getTrainerBatchIds(req.userId);
+    if (trainerBatchIds.length === 0) {
+      res.json([]);
+      return;
     }
-  } else {
-    candidates = await db.select().from(candidatesTable);
+    // If a specific batchId was requested, enforce it belongs to the trainer.
+    if (batchId && !trainerBatchIds.includes(batchId)) {
+      res.json([]);
+      return;
+    }
   }
+
+  const conditions = [];
+  if (batchId) conditions.push(eq(candidatesTable.batchId, batchId));
+  if (status) conditions.push(eq(candidatesTable.status, status));
+  if (trainerBatchIds && !batchId) conditions.push(inArray(candidatesTable.batchId, trainerBatchIds));
+
+  const candidates = conditions.length > 0
+    ? await db.select().from(candidatesTable).where(and(...conditions))
+    : await db.select().from(candidatesTable);
+
   const enriched = await Promise.all(candidates.map(enrichCandidate));
   res.json(enriched);
 });
 
-router.post("/candidates", authMiddleware, async (req, res): Promise<void> => {
+router.post("/candidates", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const parsed = CreateCandidateBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -56,6 +69,13 @@ router.post("/candidates", authMiddleware, async (req, res): Promise<void> => {
     batchId: parsed.data.batchId ?? null,
     status: "active",
   }).returning();
+  await writeAudit({
+    actorId: req.userId,
+    action: "create",
+    entityType: "candidate",
+    entityId: candidate.id,
+    details: { name: candidate.name, email: candidate.email, batchId: candidate.batchId },
+  });
   res.status(201).json(await enrichCandidate(candidate));
 });
 
@@ -73,7 +93,7 @@ router.get("/candidates/:id", authMiddleware, async (req, res): Promise<void> =>
   res.json(await enrichCandidate(candidate));
 });
 
-router.patch("/candidates/:id", authMiddleware, async (req, res): Promise<void> => {
+router.patch("/candidates/:id", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const params = UpdateCandidateParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -92,7 +112,7 @@ router.patch("/candidates/:id", authMiddleware, async (req, res): Promise<void> 
   res.json(await enrichCandidate(candidate));
 });
 
-router.delete("/candidates/:id", authMiddleware, async (req, res): Promise<void> => {
+router.delete("/candidates/:id", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const params = DeleteCandidateParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -103,10 +123,25 @@ router.delete("/candidates/:id", authMiddleware, async (req, res): Promise<void>
     res.status(404).json({ error: "Candidate not found" });
     return;
   }
+  // Audit the removal so it can be reviewed in the audit log UI.
+  await writeAudit({
+    actorId: req.userId,
+    action: "delete",
+    entityType: "candidate",
+    entityId: candidate.id,
+    details: {
+      candidateId: candidate.candidateId,
+      name: candidate.name,
+      email: candidate.email,
+      batchId: candidate.batchId,
+      status: candidate.status,
+      reason: typeof req.body?.reason === "string" ? req.body.reason : undefined,
+    },
+  });
   res.sendStatus(204);
 });
 
-router.patch("/candidates/:id/status", authMiddleware, async (req, res): Promise<void> => {
+router.patch("/candidates/:id/status", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const params = UpdateCandidateStatusParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -125,7 +160,7 @@ router.patch("/candidates/:id/status", authMiddleware, async (req, res): Promise
   res.json(await enrichCandidate(candidate));
 });
 
-router.post("/candidates/bulk-import", authMiddleware, async (req, res): Promise<void> => {
+router.post("/candidates/bulk-import", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const parsed = BulkImportCandidatesBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });

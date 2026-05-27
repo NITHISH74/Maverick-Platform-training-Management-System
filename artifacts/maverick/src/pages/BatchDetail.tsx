@@ -1,20 +1,31 @@
+import { useState } from "react";
 import { useRoute } from "wouter";
-import { useGetBatch, getGetBatchQueryKey, useListBatchCandidates, getListBatchCandidatesQueryKey, useListAttendance, getListAttendanceQueryKey, useListAssessments, getListAssessmentsQueryKey, useListToppers, getListToppersQueryKey, useGetAttendanceSummary, getGetAttendanceSummaryQueryKey } from "@workspace/api-client-react";
+import { useGetBatch, getGetBatchQueryKey, useListBatchCandidates, getListBatchCandidatesQueryKey, useListAttendance, getListAttendanceQueryKey, useListAssessments, getListAssessmentsQueryKey, useListToppers, getListToppersQueryKey, useGetAttendanceSummary, getGetAttendanceSummaryQueryKey, useCreateCandidate, useDeleteCandidate, useUpdateBatch, useListUsers } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Skeleton } from "@/components/ui/skeleton";
 import { format } from "date-fns";
-import { Users, Calendar, UserCheck, Trophy } from "lucide-react";
+import { Users, Calendar, UserCheck, Trophy, Plus, Trash2, UserPlus } from "lucide-react";
 import { Link } from "wouter";
 import { Progress } from "@/components/ui/progress";
 import { FeedbackIntelligenceCard } from "@/components/FeedbackIntelligenceCard";
+import { useAuth } from "@/hooks/useAuth";
+import { useQueryClient } from "@tanstack/react-query";
 
 export default function BatchDetail({ params }: { params: { id: string } }) {
   const id = parseInt(params.id, 10);
-  
+  const { user } = useAuth();
+  const canManage = user?.role === "admin" || user?.role === "coordinator";
+  const [showAddCandidate, setShowAddCandidate] = useState(false);
+  const [showAssignTrainers, setShowAssignTrainers] = useState(false);
+
   const { data: batch, isLoading: isBatchLoading } = useGetBatch(id, {
     query: {
       enabled: !!id,
@@ -101,9 +112,28 @@ export default function BatchDetail({ params }: { params: { id: string } }) {
           
           <TabsContent value="candidates" className="mt-4 animate-in fade-in slide-in-from-bottom-2 duration-300">
             <Card>
-              <CardHeader>
-                <CardTitle>Batch Candidates</CardTitle>
-                <CardDescription>All enrolled candidates for this batch.</CardDescription>
+              <CardHeader className="flex-row items-center justify-between space-y-0">
+                <div>
+                  <CardTitle>Batch Candidates</CardTitle>
+                  <CardDescription>All enrolled candidates for this batch.</CardDescription>
+                </div>
+                {canManage && (
+                  <div className="flex gap-2">
+                    {(!batch?.trainerIds || batch.trainerIds.length === 0) && (
+                      <Button variant="outline" size="sm" onClick={() => setShowAssignTrainers(true)}>
+                        <UserPlus className="mr-2 h-4 w-4" /> Assign Trainer
+                      </Button>
+                    )}
+                    {batch?.trainerIds && batch.trainerIds.length > 0 && (
+                      <Button variant="outline" size="sm" onClick={() => setShowAssignTrainers(true)}>
+                        <UserPlus className="mr-2 h-4 w-4" /> Manage Trainers
+                      </Button>
+                    )}
+                    <Button size="sm" onClick={() => setShowAddCandidate(true)}>
+                      <Plus className="mr-2 h-4 w-4" /> Add Candidate
+                    </Button>
+                  </div>
+                )}
               </CardHeader>
               <CardContent className="p-0">
                 <Table>
@@ -122,21 +152,19 @@ export default function BatchDetail({ params }: { params: { id: string } }) {
                       </TableRow>
                     ) : candidates?.length === 0 ? (
                       <TableRow>
-                        <TableCell colSpan={4} className="text-center py-8 text-muted-foreground border-t border-dashed">No candidates enrolled yet.</TableCell>
+                        <TableCell colSpan={4} className="text-center py-8 text-muted-foreground border-t border-dashed">
+                          No candidates enrolled yet.
+                          {canManage && (
+                            <div className="mt-3">
+                              <Button size="sm" variant="outline" onClick={() => setShowAddCandidate(true)}>
+                                <Plus className="mr-2 h-4 w-4" /> Add the first candidate
+                              </Button>
+                            </div>
+                          )}
+                        </TableCell>
                       </TableRow>
                     ) : candidates?.map((candidate) => (
-                      <TableRow key={candidate.id} className="hover:bg-muted/50 transition-colors">
-                        <TableCell className="font-mono text-sm">{candidate.candidateId}</TableCell>
-                        <TableCell className="font-medium">{candidate.name}</TableCell>
-                        <TableCell>
-                          <Badge variant="outline" className="uppercase text-[10px]">{candidate.status}</Badge>
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <Link href={`/candidates/${candidate.id}`} className="text-primary hover:underline text-sm font-medium">
-                            View Profile
-                          </Link>
-                        </TableCell>
-                      </TableRow>
+                      <CandidateRow key={candidate.id} candidate={candidate} batchId={id} canManage={canManage} />
                     ))}
                   </TableBody>
                 </Table>
@@ -308,6 +336,270 @@ export default function BatchDetail({ params }: { params: { id: string } }) {
           <FeedbackIntelligenceCard batchId={id} />
         </div>
       </div>
+
+      {canManage && (
+        <>
+          <AddCandidateDialog
+            open={showAddCandidate}
+            onClose={() => setShowAddCandidate(false)}
+            batchId={id}
+          />
+          <AssignTrainersDialog
+            open={showAssignTrainers}
+            onClose={() => setShowAssignTrainers(false)}
+            batchId={id}
+            currentTrainerIds={batch?.trainerIds ?? []}
+          />
+        </>
+      )}
     </Layout>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Candidate row with optional remove button (admin/coordinator only).
+// Removal hits DELETE /candidates/:id which writes an audit_logs row server-side.
+// ---------------------------------------------------------------------------
+function CandidateRow({
+  candidate,
+  batchId,
+  canManage,
+}: {
+  candidate: { id: number; candidateId: string; name: string; status: string };
+  batchId: number;
+  canManage: boolean;
+}) {
+  const queryClient = useQueryClient();
+  const deleteCandidate = useDeleteCandidate();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [reason, setReason] = useState("");
+
+  const handleRemove = () => {
+    deleteCandidate.mutate(
+      { id: candidate.id },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: getListBatchCandidatesQueryKey(batchId) });
+          queryClient.invalidateQueries({ queryKey: getGetBatchQueryKey(batchId) });
+          setConfirmOpen(false);
+          setReason("");
+        },
+      }
+    );
+  };
+
+  return (
+    <>
+      <TableRow className="hover:bg-muted/50 transition-colors">
+        <TableCell className="font-mono text-sm">{candidate.candidateId}</TableCell>
+        <TableCell className="font-medium">{candidate.name}</TableCell>
+        <TableCell>
+          <Badge variant="outline" className="uppercase text-[10px]">{candidate.status}</Badge>
+        </TableCell>
+        <TableCell className="text-right space-x-3">
+          <Link href={`/candidates/${candidate.id}`} className="text-primary hover:underline text-sm font-medium">
+            View Profile
+          </Link>
+          {canManage && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+              onClick={() => setConfirmOpen(true)}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          )}
+        </TableCell>
+      </TableRow>
+      <Dialog open={confirmOpen} onOpenChange={v => !v && setConfirmOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove candidate</DialogTitle>
+            <DialogDescription>
+              Remove <strong>{candidate.name}</strong> ({candidate.candidateId}) from this batch?
+              This action is logged in the audit trail.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1.5">
+            <Label>Reason (optional, for audit log)</Label>
+            <Input value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. requested transfer, withdrew" />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={deleteCandidate.isPending}
+              onClick={handleRemove}
+            >
+              {deleteCandidate.isPending ? "Removing..." : "Remove"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Add candidate to this batch (admin/coordinator only).
+// ---------------------------------------------------------------------------
+function AddCandidateDialog({
+  open,
+  onClose,
+  batchId,
+}: {
+  open: boolean;
+  onClose: () => void;
+  batchId: number;
+}) {
+  const queryClient = useQueryClient();
+  const createCandidate = useCreateCandidate();
+  const [form, setForm] = useState({ candidateId: "", name: "", email: "", phone: "" });
+  const [error, setError] = useState<string | null>(null);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    if (!form.candidateId || !form.name || !form.email) {
+      setError("Candidate ID, name, and email are required.");
+      return;
+    }
+    createCandidate.mutate(
+      {
+        data: {
+          candidateId: form.candidateId,
+          name: form.name,
+          email: form.email,
+          phone: form.phone || undefined,
+          batchId,
+        },
+      },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: getListBatchCandidatesQueryKey(batchId) });
+          queryClient.invalidateQueries({ queryKey: getGetBatchQueryKey(batchId) });
+          setForm({ candidateId: "", name: "", email: "", phone: "" });
+          onClose();
+        },
+        onError: (err: unknown) => {
+          setError(err instanceof Error ? err.message : "Failed to add candidate.");
+        },
+      }
+    );
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Add candidate to batch</DialogTitle>
+          <DialogDescription>
+            Enroll a new candidate. They'll appear in attendance and assessment rosters.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label>Candidate ID *</Label>
+              <Input value={form.candidateId} onChange={e => setForm(f => ({ ...f, candidateId: e.target.value }))} placeholder="e.g. CAND-001" />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Full Name *</Label>
+              <Input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))} placeholder="Jane Doe" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label>Email *</Label>
+              <Input type="email" value={form.email} onChange={e => setForm(f => ({ ...f, email: e.target.value }))} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Phone</Label>
+              <Input value={form.phone} onChange={e => setForm(f => ({ ...f, phone: e.target.value }))} />
+            </div>
+          </div>
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={createCandidate.isPending}>
+              {createCandidate.isPending ? "Adding..." : "Add candidate"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Assign / manage trainers for this batch (admin/coordinator only).
+// Uses PATCH /batches/:id with trainerIds (replaces full set).
+// ---------------------------------------------------------------------------
+function AssignTrainersDialog({
+  open,
+  onClose,
+  batchId,
+  currentTrainerIds,
+}: {
+  open: boolean;
+  onClose: () => void;
+  batchId: number;
+  currentTrainerIds: number[];
+}) {
+  const queryClient = useQueryClient();
+  const updateBatch = useUpdateBatch();
+  const { data: users } = useListUsers();
+  const trainers = users?.filter(u => u.role === "trainer") ?? [];
+  const [selected, setSelected] = useState<number[]>(currentTrainerIds);
+
+  // Re-sync if the modal re-opens for a different batch state.
+  if (open && selected !== currentTrainerIds && selected.length === 0 && currentTrainerIds.length > 0) {
+    setSelected(currentTrainerIds);
+  }
+
+  const toggle = (id: number) => setSelected(prev => prev.includes(id) ? prev.filter(t => t !== id) : [...prev, id]);
+
+  const handleSave = () => {
+    updateBatch.mutate(
+      { id: batchId, data: { trainerIds: selected } },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: getGetBatchQueryKey(batchId) });
+          onClose();
+        },
+      }
+    );
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={v => !v && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Assign trainers</DialogTitle>
+          <DialogDescription>
+            Select one or more trainers for this batch. They'll see this batch in their dashboard.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="max-h-64 overflow-y-auto border rounded-md p-2 space-y-1">
+          {trainers.length === 0 ? (
+            <p className="text-sm text-muted-foreground p-2">No trainers found in the system.</p>
+          ) : trainers.map(t => (
+            <label key={t.id} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-muted/40 rounded px-2 py-1">
+              <input type="checkbox" checked={selected.includes(t.id)} onChange={() => toggle(t.id)} className="h-4 w-4" />
+              <span className="flex-1">{t.name}</span>
+              <span className="text-xs text-muted-foreground">{t.email}</span>
+            </label>
+          ))}
+        </div>
+        <p className="text-xs text-muted-foreground">{selected.length} trainer(s) selected</p>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={handleSave} disabled={updateBatch.isPending}>
+            {updateBatch.isPending ? "Saving..." : "Save assignments"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
