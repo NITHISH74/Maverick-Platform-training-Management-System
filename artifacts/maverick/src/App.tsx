@@ -30,6 +30,7 @@ import Reports from "@/pages/Reports";
 import Monitoring from "@/pages/Monitoring";
 import BatchRiskDetail from "@/pages/BatchRiskDetail";
 import TrainerDetail from "@/pages/TrainerDetail";
+import Trainers from "@/pages/Trainers";
 
 // Root path handler. When Auth0 redirects back from a login, the URL is
 // `/?code=...&state=...` — if we blindly <Redirect to="/dashboard">, wouter
@@ -82,6 +83,9 @@ function Router() {
       {/* Trainer profile — hosts the Trainer Intelligence Graph (F1) and
           AI Trainer Score Card (F2). Admin/coordinator-only because it
           exposes cross-trainer comparisons. */}
+      {/* Trainers roster — discoverable entry to the per-trainer profile
+          (Intelligence Graph + AI Score Card). admin + coordinator only. */}
+      <ProtectedRoute path="/trainers" component={Trainers} allowedRoles={["admin", "coordinator"]} />
       <ProtectedRoute path="/trainers/:id" component={TrainerDetail} allowedRoles={["admin", "coordinator"]} />
 
       <Route component={NotFound} />

@@ -17,6 +17,7 @@ import {
   PanelLeftOpen,
   BarChart2,
   ShieldAlert,
+  BrainCircuit,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useCopilot } from "@/components/CopilotContext";
@@ -28,6 +29,9 @@ const NAV_ITEMS = [
   { href: "/attendance", label: "Attendance", icon: CalendarCheck, roles: ["admin", "coordinator", "trainer"] },
   { href: "/assessments", label: "Assessments", icon: ClipboardCheck, roles: ["admin", "coordinator", "trainer"] },
   { href: "/toppers", label: "Toppers", icon: Trophy, roles: ["admin", "coordinator"] },
+  // Trainer Intelligence (F1) + AI Trainer Score (F2) entry point. The list
+  // page lives at /trainers; clicking a trainer opens /trainers/:id.
+  { href: "/trainers", label: "Trainers", icon: BrainCircuit, roles: ["admin", "coordinator"] },
   { href: "/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin", "coordinator", "trainer"] },
   // Batch Monitoring — autonomous risk-scan agent. Visible to all 3 roles;
   // server-side scoping (visibleBatchIds) hides batches the user can't access.
