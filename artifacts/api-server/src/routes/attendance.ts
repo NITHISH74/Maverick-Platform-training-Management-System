@@ -1,11 +1,22 @@
 import { Router, type IRouter } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db, attendanceTable, candidatesTable, batchesTable } from "@workspace/db";
 import {
   CreateAttendanceBody, BulkCreateAttendanceBody, UpdateAttendanceParams, UpdateAttendanceBody,
   ListAttendanceQueryParams, GetAttendanceSummaryQueryParams
 } from "@workspace/api-zod";
 import { authMiddleware } from "../middlewares/auth";
+import { getTrainerBatchIds } from "../lib/rbac";
+
+// Returns null when there is no trainer restriction; otherwise the list of
+// batch IDs the trainer is allowed to act on. Trainers with 0 batches are
+// represented by an empty array (callers should short-circuit to []).
+async function trainerScope(req: { userRole?: string; userId?: number }): Promise<number[] | null> {
+  if (req.userRole === "trainer" && req.userId) {
+    return await getTrainerBatchIds(req.userId);
+  }
+  return null;
+}
 
 const router: IRouter = Router();
 
@@ -20,19 +31,28 @@ async function enrichAttendance(a: typeof attendanceTable.$inferSelect) {
 
 router.get("/attendance", authMiddleware, async (req, res): Promise<void> => {
   const params = ListAttendanceQueryParams.safeParse(req.query);
-  let records: typeof attendanceTable.$inferSelect[];
+  const trainerBatches = await trainerScope(req);
+  if (trainerBatches !== null && trainerBatches.length === 0) { res.json([]); return; }
+
+  const conditions: ReturnType<typeof eq>[] = [];
   if (params.success) {
     const { batchId, date, candidateId } = params.data;
-    const conditions: ReturnType<typeof eq>[] = [];
-    if (batchId) conditions.push(eq(attendanceTable.batchId, batchId));
+    if (batchId) {
+      // Trainers can only query their own batches.
+      if (trainerBatches !== null && !trainerBatches.includes(batchId)) { res.json([]); return; }
+      conditions.push(eq(attendanceTable.batchId, batchId));
+    } else if (trainerBatches !== null) {
+      conditions.push(inArray(attendanceTable.batchId, trainerBatches));
+    }
     if (date) conditions.push(eq(attendanceTable.date, date));
     if (candidateId) conditions.push(eq(attendanceTable.candidateId, candidateId));
-    records = conditions.length > 0
-      ? await db.select().from(attendanceTable).where(and(...conditions))
-      : await db.select().from(attendanceTable);
-  } else {
-    records = await db.select().from(attendanceTable);
+  } else if (trainerBatches !== null) {
+    conditions.push(inArray(attendanceTable.batchId, trainerBatches));
   }
+
+  const records = conditions.length > 0
+    ? await db.select().from(attendanceTable).where(and(...conditions))
+    : await db.select().from(attendanceTable);
   const enriched = await Promise.all(records.map(enrichAttendance));
   res.json(enriched);
 });
@@ -41,6 +61,12 @@ router.post("/attendance", authMiddleware, async (req, res): Promise<void> => {
   const parsed = CreateAttendanceBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
+    return;
+  }
+  // Trainers can only mark attendance for batches they're assigned to.
+  const trainerBatches = await trainerScope(req);
+  if (trainerBatches !== null && !trainerBatches.includes(parsed.data.batchId)) {
+    res.status(403).json({ error: "Forbidden: batch not assigned to you" });
     return;
   }
   const dateStr = parsed.data.date instanceof Date
@@ -63,6 +89,12 @@ router.post("/attendance/bulk", authMiddleware, async (req, res): Promise<void> 
     return;
   }
   const { batchId, records } = parsed.data;
+  // Trainers can only bulk-mark attendance for their own batches.
+  const trainerBatches = await trainerScope(req);
+  if (trainerBatches !== null && !trainerBatches.includes(batchId)) {
+    res.status(403).json({ error: "Forbidden: batch not assigned to you" });
+    return;
+  }
   const dateStr = parsed.data.date instanceof Date
     ? parsed.data.date.toISOString().split("T")[0]
     : String(parsed.data.date);
@@ -81,10 +113,15 @@ router.post("/attendance/bulk", authMiddleware, async (req, res): Promise<void> 
 router.get("/attendance/summary", authMiddleware, async (req, res): Promise<void> => {
   const params = GetAttendanceSummaryQueryParams.safeParse(req.query);
   const batchId = params.success ? params.data.batchId : undefined;
+  const trainerBatches = await trainerScope(req);
+  if (trainerBatches !== null && trainerBatches.length === 0) { res.json([]); return; }
+  if (trainerBatches !== null && batchId && !trainerBatches.includes(batchId)) { res.json([]); return; }
 
   const candidates = batchId
     ? await db.select().from(candidatesTable).where(eq(candidatesTable.batchId, batchId))
-    : await db.select().from(candidatesTable);
+    : trainerBatches !== null
+      ? await db.select().from(candidatesTable).where(inArray(candidatesTable.batchId, trainerBatches))
+      : await db.select().from(candidatesTable);
 
   const summaries = await Promise.all(candidates.map(async (c) => {
     const records = batchId
@@ -121,9 +158,18 @@ router.patch("/attendance/:id", authMiddleware, async (req, res): Promise<void> 
 });
 
 router.get("/attendance/alerts", authMiddleware, async (req, res): Promise<void> => {
-  const allAttendance = await db.select().from(attendanceTable);
-  const candidates = await db.select().from(candidatesTable);
-  const batches = await db.select().from(batchesTable);
+  const trainerBatches = await trainerScope(req);
+  if (trainerBatches !== null && trainerBatches.length === 0) { res.json([]); return; }
+
+  const allAttendance = trainerBatches !== null
+    ? await db.select().from(attendanceTable).where(inArray(attendanceTable.batchId, trainerBatches))
+    : await db.select().from(attendanceTable);
+  const candidates = trainerBatches !== null
+    ? await db.select().from(candidatesTable).where(inArray(candidatesTable.batchId, trainerBatches))
+    : await db.select().from(candidatesTable);
+  const batches = trainerBatches !== null
+    ? await db.select().from(batchesTable).where(inArray(batchesTable.id, trainerBatches))
+    : await db.select().from(batchesTable);
 
   const alerts: {
     candidateId: number;

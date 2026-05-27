@@ -1,5 +1,5 @@
 import { useState, useRef } from "react";
-import { useListAssessments, useCreateAssessment, useListBatches, useBulkUploadAssessmentScores, useListCandidates } from "@workspace/api-client-react";
+import { useListAssessments, useCreateAssessment, useDeleteAssessment, useListBatches, useBulkUploadAssessmentScores, useListCandidates } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -8,11 +8,12 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { format } from "date-fns";
-import { Plus, Upload, Download, CheckCircle2, XCircle } from "lucide-react";
+import { Plus, Upload, Download, CheckCircle2, XCircle, Trash2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useAuth } from "@/hooks/useAuth";
 
 const ASSESSMENT_TYPES = [
   { value: "sprint_review", label: "Sprint Review" },
@@ -304,6 +305,8 @@ export default function Assessments() {
   const [showCreate, setShowCreate] = useState(false);
   const [showBulkScore, setShowBulkScore] = useState(false);
   const { data: assessments, isLoading } = useListAssessments();
+  const { user } = useAuth();
+  const isAdminOrCoord = user?.role === "admin" || user?.role === "coordinator";
 
   return (
     <Layout>
@@ -311,7 +314,9 @@ export default function Assessments() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Assessments</h1>
-            <p className="text-muted-foreground">Manage evaluations across batches.</p>
+            <p className="text-muted-foreground">
+              {isAdminOrCoord ? "Manage evaluations across batches." : "Manage evaluations for your assigned batches."}
+            </p>
           </div>
           <div className="flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => setShowBulkScore(true)} className="gap-2">
@@ -345,25 +350,21 @@ export default function Assessments() {
                   <TableHead>Type</TableHead>
                   <TableHead>Date</TableHead>
                   <TableHead>Max Score</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {isLoading ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">Loading assessments...</TableCell>
+                    <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">Loading assessments...</TableCell>
                   </TableRow>
                 ) : assessments?.map((assessment) => (
-                  <TableRow key={assessment.id}>
-                    <TableCell className="font-medium">{assessment.title}</TableCell>
-                    <TableCell>{assessment.batchName}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className="capitalize">
-                        {assessment.type.replace('_', ' ')}
-                      </Badge>
-                    </TableCell>
-                    <TableCell>{format(new Date(assessment.scheduledDate), "MMM d, yyyy")}</TableCell>
-                    <TableCell className="font-mono">{assessment.maxScore}</TableCell>
-                  </TableRow>
+                  <AssessmentRow
+                    key={assessment.id}
+                    assessment={assessment}
+                    currentUserId={user?.id}
+                    isAdminOrCoord={isAdminOrCoord}
+                  />
                 ))}
               </TableBody>
             </Table>
@@ -371,5 +372,97 @@ export default function Assessments() {
         </Card>
       </div>
     </Layout>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Single assessment row with an ownership-gated delete button.
+// Trainers see the Trash button only on assessments they uploaded.
+// Admin / coordinator can delete any.
+// ---------------------------------------------------------------------------
+type AssessmentRowProps = {
+  assessment: {
+    id: number;
+    title: string;
+    batchName?: string | null;
+    type: string;
+    scheduledDate: string;
+    maxScore: number;
+    uploadedBy?: number | null;
+  };
+  currentUserId?: number;
+  isAdminOrCoord: boolean;
+};
+
+function AssessmentRow({ assessment, currentUserId, isAdminOrCoord }: AssessmentRowProps) {
+  const queryClient = useQueryClient();
+  const deleteAssessment = useDeleteAssessment();
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
+  const isOwner = assessment.uploadedBy != null && assessment.uploadedBy === currentUserId;
+  const canDelete = isAdminOrCoord || isOwner;
+
+  const handleDelete = () => {
+    deleteAssessment.mutate(
+      { id: assessment.id },
+      {
+        onSuccess: () => {
+          queryClient.invalidateQueries({ queryKey: ["listAssessments"] });
+          setConfirmOpen(false);
+        },
+      }
+    );
+  };
+
+  return (
+    <>
+      <TableRow>
+        <TableCell className="font-medium">{assessment.title}</TableCell>
+        <TableCell>{assessment.batchName}</TableCell>
+        <TableCell>
+          <Badge variant="secondary" className="capitalize">
+            {assessment.type.replace('_', ' ')}
+          </Badge>
+        </TableCell>
+        <TableCell>{format(new Date(assessment.scheduledDate), "MMM d, yyyy")}</TableCell>
+        <TableCell className="font-mono">{assessment.maxScore}</TableCell>
+        <TableCell className="text-right">
+          {canDelete ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-destructive hover:text-destructive hover:bg-destructive/10"
+              onClick={() => setConfirmOpen(true)}
+              title={isOwner && !isAdminOrCoord ? "Delete (you created this)" : "Delete"}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          ) : (
+            <span className="text-xs text-muted-foreground">—</span>
+          )}
+        </TableCell>
+      </TableRow>
+      <Dialog open={confirmOpen} onOpenChange={v => !v && setConfirmOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete assessment</DialogTitle>
+            <DialogDescription>
+              Delete <strong>{assessment.title}</strong> ({assessment.batchName})?
+              This will also delete every candidate score under it. Logged in audit trail.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={deleteAssessment.isPending}
+              onClick={handleDelete}
+            >
+              {deleteAssessment.isPending ? "Deleting..." : "Delete"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

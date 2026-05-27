@@ -1,11 +1,12 @@
 import { Router, type IRouter } from "express";
-import { eq, inArray } from "drizzle-orm";
+import { eq, inArray, and } from "drizzle-orm";
 import { db, batchesTable, batchTrainersTable, usersTable, candidatesTable } from "@workspace/db";
 import {
   CreateBatchBody, UpdateBatchBody, GetBatchParams, UpdateBatchParams, DeleteBatchParams,
   UpdateBatchStatusParams, UpdateBatchStatusBody, ListBatchesQueryParams, ListBatchCandidatesParams
 } from "@workspace/api-zod";
-import { authMiddleware } from "../middlewares/auth";
+import { authMiddleware, requireRole } from "../middlewares/auth";
+import { getTrainerBatchIds, writeAudit } from "../lib/rbac";
 
 const router: IRouter = Router();
 
@@ -49,14 +50,30 @@ async function enrichBatch(batch: typeof batchesTable.$inferSelect) {
 
 router.get("/batches", authMiddleware, async (req, res): Promise<void> => {
   const params = ListBatchesQueryParams.safeParse(req.query);
-  const batches = await (params.success && params.data.status
-    ? db.select().from(batchesTable).where(eq(batchesTable.status, params.data.status))
-    : db.select().from(batchesTable));
+  const statusFilter = params.success ? params.data.status : undefined;
+
+  // Trainer scoping: trainers can only see batches they are assigned to.
+  let trainerBatchIds: number[] | null = null;
+  if (req.userRole === "trainer" && req.userId) {
+    trainerBatchIds = await getTrainerBatchIds(req.userId);
+    if (trainerBatchIds.length === 0) {
+      res.json([]);
+      return;
+    }
+  }
+
+  const conditions = [];
+  if (statusFilter) conditions.push(eq(batchesTable.status, statusFilter));
+  if (trainerBatchIds) conditions.push(inArray(batchesTable.id, trainerBatchIds));
+
+  const batches = conditions.length > 0
+    ? await db.select().from(batchesTable).where(and(...conditions))
+    : await db.select().from(batchesTable);
   const enriched = await Promise.all(batches.map(enrichBatch));
   res.json(enriched);
 });
 
-router.post("/batches", authMiddleware, async (req, res): Promise<void> => {
+router.post("/batches", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const parsed = CreateBatchBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
@@ -77,6 +94,13 @@ router.post("/batches", authMiddleware, async (req, res): Promise<void> => {
   if (trainerIds && trainerIds.length > 0) {
     await db.insert(batchTrainersTable).values(trainerIds.map(tid => ({ batchId: batch.id, trainerId: tid })));
   }
+  await writeAudit({
+    actorId: req.userId,
+    action: "create",
+    entityType: "batch",
+    entityId: batch.id,
+    details: { name: batch.name, program: batch.program, trainerIds: trainerIds ?? [] },
+  });
   res.status(201).json(await enrichBatch(batch));
 });
 
@@ -86,6 +110,14 @@ router.get("/batches/:id", authMiddleware, async (req, res): Promise<void> => {
     res.status(400).json({ error: params.error.message });
     return;
   }
+  // Trainer scoping
+  if (req.userRole === "trainer" && req.userId) {
+    const trainerBatchIds = await getTrainerBatchIds(req.userId);
+    if (!trainerBatchIds.includes(params.data.id)) {
+      res.status(403).json({ error: "Forbidden: batch not assigned to you" });
+      return;
+    }
+  }
   const [batch] = await db.select().from(batchesTable).where(eq(batchesTable.id, params.data.id));
   if (!batch) {
     res.status(404).json({ error: "Batch not found" });
@@ -94,7 +126,7 @@ router.get("/batches/:id", authMiddleware, async (req, res): Promise<void> => {
   res.json(await enrichBatch(batch));
 });
 
-router.patch("/batches/:id", authMiddleware, async (req, res): Promise<void> => {
+router.patch("/batches/:id", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const params = UpdateBatchParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -123,7 +155,7 @@ router.patch("/batches/:id", authMiddleware, async (req, res): Promise<void> => 
   res.json(await enrichBatch(batch));
 });
 
-router.delete("/batches/:id", authMiddleware, async (req, res): Promise<void> => {
+router.delete("/batches/:id", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const params = DeleteBatchParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -134,10 +166,17 @@ router.delete("/batches/:id", authMiddleware, async (req, res): Promise<void> =>
     res.status(404).json({ error: "Batch not found" });
     return;
   }
+  await writeAudit({
+    actorId: req.userId,
+    action: "delete",
+    entityType: "batch",
+    entityId: batch.id,
+    details: { name: batch.name, program: batch.program },
+  });
   res.sendStatus(204);
 });
 
-router.patch("/batches/:id/status", authMiddleware, async (req, res): Promise<void> => {
+router.patch("/batches/:id/status", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const params = UpdateBatchStatusParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -161,6 +200,14 @@ router.get("/batches/:id/candidates", authMiddleware, async (req, res): Promise<
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
+  }
+  // Trainer scoping
+  if (req.userRole === "trainer" && req.userId) {
+    const trainerBatchIds = await getTrainerBatchIds(req.userId);
+    if (!trainerBatchIds.includes(params.data.id)) {
+      res.status(403).json({ error: "Forbidden: batch not assigned to you" });
+      return;
+    }
   }
   const candidates = await db.select().from(candidatesTable).where(eq(candidatesTable.batchId, params.data.id));
   const [batch] = await db.select().from(batchesTable).where(eq(batchesTable.id, params.data.id));
