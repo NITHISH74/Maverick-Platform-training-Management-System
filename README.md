@@ -16,7 +16,6 @@ Enterprise **Training Management System (TMS)** for running training programmes 
 - [Prerequisites](#prerequisites)
 - [Download and install](#download-and-install)
 - [Configuration and secrets](#configuration-and-secrets)
-- [Run on Replit](#run-on-replit)
 - [Run locally (Windows / macOS / Linux)](#run-locally-windows--macos--linux)
 - [Default ports and routing](#default-ports-and-routing)
 - [Project structure](#project-structure)
@@ -28,7 +27,7 @@ Enterprise **Training Management System (TMS)** for running training programmes 
 
 ## Architecture
 
-Monorepo (**pnpm workspaces**). The **OpenAPI spec** is the contract; **Orval** generates Zod schemas and React Query hooks. The **Express API** talks to **PostgreSQL** via **Drizzle ORM**. The **React (Vite)** app calls `/api` through the Replit proxy in development or your reverse proxy in production.
+Monorepo (**pnpm workspaces**). The **OpenAPI spec** is the contract; **Orval** generates Zod schemas and React Query hooks. The **Express API** talks to **PostgreSQL** via **Drizzle ORM**. The **React (Vite)** app calls `/api` through the Vite dev proxy in development or your reverse proxy in production.
 
 ```mermaid
 flowchart TB
@@ -38,7 +37,7 @@ flowchart TB
     UI --> LS
   end
 
-  subgraph ReplitProxy["Replit proxy (dev / deploy)"]
+  subgraph DevProxy["Dev / reverse proxy"]
     P["/ → Frontend<br/>/api → API Server"]
   end
 
@@ -146,7 +145,7 @@ flowchart LR
 - **Candidate pipeline** — profile management with status flow (`active → discontinued / cleared / offered / onboarded`).
 - **Attendance** — daily roster marking, bulk CSV upload, CSV export.
 - **Assessments** — sprint reviews, coding rounds, API tests, project evaluations, all weighted.
-- **Toppers leaderboard** — Weighted Composite Score (WCS) ranking across assessment categories (see `replit.md`).
+- **Toppers leaderboard** — Weighted Composite Score (WCS) ranking across assessment categories.
 - **Feedback & sentiment** — collect candidate feedback, AI-powered sentiment analysis (Azure OpenAI GPT-4.1).
 - **AI chatbot (RAG)** — natural-language Q&A over training data using SQL generation + text embeddings.
 - **AI notification copywriting** — auto-drafted notification messages via GPT-4.1.
@@ -178,7 +177,7 @@ flowchart LR
 | Secrets | Local `.env` files in dev; **Azure Key Vault** in production (auto-overrides plain env vars) |
 | Observability | **Pino** structured logs (Node); optional **Sentry** in FastAPI |
 | Build | **esbuild** bundles the API; **Vite** builds the SPA to static `dist/public`; FastAPI runs under **uvicorn** |
-| Deployment | **Replit Autoscale** with artifact-based service definitions (`artifact.toml`) |
+| Deployment | Azure App Service + Container Apps + Static Web Apps (see "Azure Deployment" section), or any container host |
 
 ---
 
@@ -186,7 +185,7 @@ flowchart LR
 
 | Area | Technology |
 |------|------------|
-| Runtime | Node.js **24** (see `.replit`); Python **3.12** for the AI service |
+| Runtime | Node.js **24**; Python **3.12** for the AI service |
 | Package manager | **pnpm** workspaces (required; npm/yarn blocked); **pip** for the AI service |
 | Language | TypeScript **5.9**; Python 3.12 |
 | Frontend | React 19, Vite 7, Tailwind CSS 4, shadcn/ui, Recharts, wouter, Auth0 |
@@ -203,10 +202,10 @@ flowchart LR
 
 | Requirement | Version / notes |
 |-------------|-----------------|
-| **Node.js** | 20+ locally; **24** on Replit (`nodejs-24` module) |
+| **Node.js** | 20+ locally; 24 LTS in production |
 | **pnpm** | 9+ — install globally: `npm install -g pnpm` |
 | **Python** | **3.12** (only needed if you want to run the AI service locally) |
-| **PostgreSQL** | 15+ locally, or hosted (Neon, Supabase, Railway, Replit DB) |
+| **PostgreSQL** | 15+ locally, or hosted (Neon, Supabase, Railway) |
 | **Azure OpenAI** | A deployment of **GPT-4.1** (and optionally a text-embedding deployment) for the AI service |
 | **Git** | To clone the repository |
 
@@ -243,7 +242,7 @@ pnpm --filter @workspace/db run push
 
 ### 5. Start the application
 
-You need **three processes** to run the full platform locally: the **Node API** (port 8080), the **Vite frontend** (port 5173) and the **Python AI service** (port 9000). The AI service is only required for the chatbot, feedback analysis, notification copy, and CrewAI agent endpoints — the rest of the UI works without it. See [Run locally](#run-locally-windows--macos--linux) or [Run on Replit](#run-on-replit).
+You need **three processes** to run the full platform locally: the **Node API** (port 8080), the **Vite frontend** (port 5173) and the **Python AI service** (port 9000). The AI service is only required for the chatbot, feedback analysis, notification copy, and CrewAI agent endpoints — the rest of the UI works without it. See [Run locally](#run-locally-windows--macos--linux).
 
 ---
 
@@ -289,18 +288,6 @@ The Node API needs `DATABASE_URL`, the frontend needs Auth0 credentials, and the
 
 ### Where to add configuration
 
-#### On Replit (recommended for this template)
-
-1. Open your Repl and enable the **PostgreSQL** module (`.replit` includes `postgresql-16`).
-2. Replit usually injects **`DATABASE_URL`** when the database is provisioned. Confirm it under **Tools → Secrets** (or **Database** panel).
-3. Add any extra secrets in **Tools → Secrets** (same as environment variables for the Repl).
-4. Service-specific ports are defined in Replit artifacts (you normally do **not** set these manually on Replit):
-   - `artifacts/api-server/.replit-artifact/artifact.toml` → `PORT=8080`
-   - `artifacts/maverick/.replit-artifact/artifact.toml` → `PORT=19174`, `BASE_PATH=/`
-5. Click **Run** (workflow name: **`Project`**, from `.replit` `[workflows] runButton = "Project"`). Replit starts the API and frontend via artifact services.
-
-After a git merge, Replit runs `scripts/post-merge.sh` (install + `pnpm --filter db push`) automatically (`.replit` `[postMerge]`).
-
 #### Local development
 
 Create a **`.env` file in the repository root** (same folder as `package.json`):
@@ -337,31 +324,6 @@ export DATABASE_URL="postgres://user:password@localhost:5432/maverick"
 export PORT=8080
 export NODE_ENV=development
 ```
-
----
-
-## Run on Replit
-
-Settings from [`.replit`](.replit):
-
-| Setting | Value |
-|---------|--------|
-| Node module | `nodejs-24` |
-| Database module | `postgresql-16` |
-| Workspace stack | `PNPM_WORKSPACE` |
-| Run button workflow | `Project` |
-| Deployment | `autoscale`, router `application` |
-| Post-build | `pnpm store prune` (CI mode) |
-
-**Steps**
-
-1. Import or open the Repl.
-2. Wait for `pnpm install` (and post-merge DB push if applicable).
-3. Ensure **PostgreSQL** is provisioned and `DATABASE_URL` is set.
-4. Press **Run** → starts API (`/api` on port **8080**) and web UI (port **19174**, exposed as external **3000** in `.replit` ports).
-5. Open the web preview; API calls go to `/api` through the Replit proxy.
-
-**Deployment:** Use Replit **Deployments**; production builds are defined in each artifact’s `artifact.toml` (API: esbuild bundle; frontend: static `dist/public`).
 
 ---
 
@@ -454,7 +416,7 @@ Health check: `GET http://localhost:9000/healthz`. Interactive docs at `http://l
 
 ### API proxy for local dev
 
-The frontend expects the API at **`/api`**. On Replit, the proxy handles this. Locally you may need a Vite proxy or to open the API directly at `http://localhost:8080/api`. If requests fail with 404, add a dev proxy in `artifacts/maverick/vite.config.ts` or use a tool like `vite` `server.proxy` pointing `/api` → `http://localhost:8080`.
+The frontend expects the API at **`/api`**. The Vite dev server (`artifacts/maverick/vite.config.ts`) proxies `/api` → `http://127.0.0.1:8080`. In production, your reverse proxy or static-host rewrite (e.g. Vercel `vercel.json`, Azure Static Web Apps `staticwebapp.config.json`) should do the same.
 
 ### First-time database
 
@@ -462,23 +424,22 @@ The frontend expects the API at **`/api`**. On Replit, the proxy handles this. L
 pnpm --filter @workspace/db run push
 ```
 
-Create users through the **Users** admin UI after logging in with an account you insert into the database, or add seed data yourself (a `seed` script is referenced in `replit.md` but is not present in `@workspace/db` at this time).
+Create users through the **Users** admin UI after logging in with an account you insert into the database, or add seed data yourself.
 
 ---
 
 ## Default ports and routing
 
-From [`.replit`](.replit) and [Replit artifacts](artifacts/):
+| Service | Local port | Path |
+|---------|------------|------|
+| API Server | **8080** | `/api` |
+| Maverick UI (Vite dev) | **5173** | `/` |
+| Python AI service | **9000** | `/ai/*`, `/copilot/*`, `/trainer-scoring/*`, `/feedback-intelligence/*` |
+| Mockup sandbox (optional) | **8081** | `/__mockup` |
 
-| Service | Local port | Path | External (Replit) |
-|---------|------------|------|-------------------|
-| API Server | **8080** | `/api` | 8080 |
-| Maverick UI | **19174** | `/` | 3000 |
-| Mockup sandbox (optional) | **8081** | `/__mockup` | 80 |
+**Routing (local development)**
 
-**Routing (development on Replit)**
-
-- `/api/*` → Express API (`artifacts/api-server`)
+- `/api/*` → Express API (`artifacts/api-server`) — Vite dev server proxies this to `127.0.0.1:8080`
 - `/*` → Vite dev server (`artifacts/maverick`)
 
 Health check (production): `GET /api/healthz`
@@ -489,7 +450,6 @@ Health check (production): `GET /api/healthz`
 
 ```
 Maverick-Platform-training-Management-System/
-├── .replit                    # Replit modules, ports, workflows, deployment
 ├── artifacts/
 │   ├── api-server/            # Express API (@workspace/api-server)
 │   │   └── src/routes/        # auth, batches, candidates, attendance, …
@@ -501,10 +461,8 @@ Maverick-Platform-training-Management-System/
 │   ├── api-zod/               # Generated Zod schemas
 │   ├── api-client-react/      # Generated React Query hooks
 │   └── db/src/schema/         # Drizzle tables (users, batches, …)
-├── scripts/post-merge.sh      # Replit: install + db push after merge
 ├── package.json               # Root scripts (typecheck, build)
 ├── pnpm-workspace.yaml
-└── replit.md                  # Extended dev notes (WCS toppers, gotchas)
 ```
 
 ---
@@ -852,7 +810,7 @@ cd services/ai
 | **Candidates** | Profiles and status (active → discontinued / cleared / offered / onboarded) |
 | **Attendance** | Daily roster, bulk CSV, export |
 | **Assessments** | Sprint reviews, coding, API tests, project evaluations |
-| **Toppers** | Weighted Composite Score (WCS) leaderboard — see `replit.md` |
+| **Toppers** | Weighted Composite Score (WCS) leaderboard |
 | **Feedback** | Satisfaction tracking with sentiment |
 | **Notifications** | Per-user alerts |
 | **Users** | RBAC: admin, coordinator, trainer |
@@ -888,14 +846,13 @@ pnpm --filter @workspace/db run push            # Push schema to PostgreSQL (dev
 
 | Issue | What to check |
 |-------|----------------|
-| `DATABASE_URL must be set` | Set `DATABASE_URL` in Replit Secrets or local `.env` |
+| `DATABASE_URL must be set` | Set `DATABASE_URL` in your local `.env` (or your host's environment variables) |
 | `PORT environment variable is required` | Set `PORT` before starting API or Vite |
 | `Use pnpm instead` | Install pnpm; do not use `npm install` at root |
 | API changes not reflected | API `dev` rebuilds on start — restart the process |
-| `/api` 404 locally | Add Vite proxy to port 8080 or use Replit |
+| `/api` 404 locally | Vite dev proxy is in `artifacts/maverick/vite.config.ts`; confirm the Node API is on 8080 |
 | Type errors after API change | Run `pnpm --filter @workspace/api-spec run codegen` |
 
-For deeper architecture notes (WCS formula, date handling, enrichment pattern), see **[replit.md](replit.md)**.
 
 ---
 
