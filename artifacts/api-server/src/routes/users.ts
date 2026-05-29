@@ -2,7 +2,7 @@ import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
 import { db, usersTable } from "@workspace/db";
 import { CreateUserBody, UpdateUserBody, GetUserParams, UpdateUserParams, DeleteUserParams, ListUsersQueryParams } from "@workspace/api-zod";
-import { authMiddleware } from "../middlewares/auth";
+import { authMiddleware, requireRole } from "../middlewares/auth";
 import { hashPassword } from "./auth";
 
 const router: IRouter = Router();
@@ -61,7 +61,9 @@ router.get("/users/:id", authMiddleware, async (req, res): Promise<void> => {
   res.json(serializeUser(user));
 });
 
-router.patch("/users/:id", authMiddleware, async (req, res): Promise<void> => {
+// Bug 3 fix: only admins can edit user records (was authMiddleware only —
+// any logged-in user could patch arbitrary users via the API).
+router.patch("/users/:id", authMiddleware, requireRole("admin"), async (req, res): Promise<void> => {
   const params = UpdateUserParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -80,7 +82,8 @@ router.patch("/users/:id", authMiddleware, async (req, res): Promise<void> => {
   res.json(serializeUser(user));
 });
 
-router.delete("/users/:id", authMiddleware, async (req, res): Promise<void> => {
+// Bug 3 fix: same admin gate on hard-delete.
+router.delete("/users/:id", authMiddleware, requireRole("admin"), async (req, res): Promise<void> => {
   const params = DeleteUserParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });

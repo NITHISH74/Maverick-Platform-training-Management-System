@@ -1,5 +1,5 @@
 import { Router, type IRouter } from "express";
-import { eq } from "drizzle-orm";
+import { eq, isNull, and, sql, inArray } from "drizzle-orm";
 import { db, usersTable, batchesTable, candidatesTable, attendanceTable, assessmentsTable, feedbackTable, auditLogsTable, notificationsTable } from "@workspace/db";
 import { GetBatchMetricsQueryParams, GetAttendanceTrendsQueryParams } from "@workspace/api-zod";
 import { authMiddleware } from "../middlewares/auth";
@@ -212,6 +212,160 @@ router.get("/dashboard/candidate-status-breakdown", authMiddleware, async (req, 
     statusMap.set(c.status, (statusMap.get(c.status) ?? 0) + 1);
   });
   res.json(Array.from(statusMap.entries()).map(([status, count]) => ({ status, count })));
+});
+
+// =============================================================
+// F2 — Batch comparison (grouped by program).
+// Returns one row per `program`, aggregating attendance %, latest-
+// assessment %, clearance rate, and the "best batch" by composite
+// score (attendance + assessment + clearance).
+// =============================================================
+router.get("/dashboard/batch-comparison", authMiddleware, async (_req, res): Promise<void> => {
+  // Pull all live (non-deleted) batches once.
+  const batches = await db.select().from(batchesTable).where(isNull(batchesTable.deletedAt));
+  if (batches.length === 0) {
+    res.json({ programs: [] });
+    return;
+  }
+  const batchIds = batches.map((b) => b.id);
+
+  // Aggregate metrics per batch — single trip to the DB each.
+  const attPerBatch = await db.execute<{ batch_id: number; pct: string }>(sql`
+    SELECT batch_id,
+           ROUND(100.0 * SUM(CASE WHEN status='present' THEN 1 ELSE 0 END)::numeric
+                 / NULLIF(COUNT(*), 0), 2) AS pct
+    FROM attendance
+    WHERE batch_id = ANY(${sql.raw(`ARRAY[${batchIds.join(",")}]::int[]`)})
+    GROUP BY batch_id
+  `);
+  const attMap = new Map<number, number>();
+  for (const r of (attPerBatch.rows ?? attPerBatch) as Array<{ batch_id: number; pct: string }>) {
+    attMap.set(Number(r.batch_id), Number(r.pct ?? 0));
+  }
+
+  const scorePerBatch = await db.execute<{ batch_id: number; pct: string; passed: string }>(sql`
+    SELECT batch_id,
+           ROUND(AVG(100.0 * score / NULLIF(max_score, 0)), 2) AS pct,
+           ROUND(100.0 * SUM(CASE WHEN passed THEN 1 ELSE 0 END)::numeric
+                 / NULLIF(COUNT(*), 0), 2) AS passed
+    FROM assessments
+    WHERE batch_id = ANY(${sql.raw(`ARRAY[${batchIds.join(",")}]::int[]`)})
+    GROUP BY batch_id
+  `);
+  const scoreMap = new Map<number, number>();
+  const passMap = new Map<number, number>();
+  for (const r of (scorePerBatch.rows ?? scorePerBatch) as Array<{ batch_id: number; pct: string; passed: string }>) {
+    scoreMap.set(Number(r.batch_id), Number(r.pct ?? 0));
+    passMap.set(Number(r.batch_id), Number(r.passed ?? 0));
+  }
+
+  const candCounts = await db.execute<{ batch_id: number; count: string }>(sql`
+    SELECT batch_id, COUNT(*)::text AS count FROM candidates
+    WHERE batch_id = ANY(${sql.raw(`ARRAY[${batchIds.join(",")}]::int[]`)})
+    GROUP BY batch_id
+  `);
+  const candMap = new Map<number, number>();
+  for (const r of (candCounts.rows ?? candCounts) as Array<{ batch_id: number; count: string }>) {
+    candMap.set(Number(r.batch_id), Number(r.count ?? 0));
+  }
+
+  // Group by the program field (or first word of batch name as fallback).
+  const groups = new Map<string, typeof batches>();
+  for (const b of batches) {
+    const key = (b.program || b.name.split(/\s+/)[0] || "Other").trim();
+    const list = groups.get(key) ?? [];
+    list.push(b);
+    groups.set(key, list);
+  }
+
+  const programs = Array.from(groups.entries()).map(([program, group]) => {
+    let attSum = 0, attN = 0, scoreSum = 0, scoreN = 0, passSum = 0, passN = 0;
+    let totalCandidates = 0;
+    let best: { id: number; name: string; composite: number } | null = null;
+    for (const b of group) {
+      const a = attMap.get(b.id);
+      const s = scoreMap.get(b.id);
+      const p = passMap.get(b.id);
+      if (a != null) { attSum += a; attN++; }
+      if (s != null) { scoreSum += s; scoreN++; }
+      if (p != null) { passSum += p; passN++; }
+      totalCandidates += candMap.get(b.id) ?? 0;
+      // Composite score for "best batch" — equal-weight, fall back to 0
+      // when any signal is missing.
+      const composite = (a ?? 0) + (s ?? 0) + (p ?? 0);
+      if (!best || composite > best.composite) {
+        best = { id: b.id, name: b.name, composite };
+      }
+    }
+    return {
+      program,
+      batch_count: group.length,
+      total_candidates: totalCandidates,
+      avg_attendance_pct: attN > 0 ? Number((attSum / attN).toFixed(2)) : 0,
+      avg_score_pct: scoreN > 0 ? Number((scoreSum / scoreN).toFixed(2)) : 0,
+      clearance_rate: passN > 0 ? Number((passSum / passN).toFixed(2)) : 0,
+      best_batch: best ? { id: String(best.id), name: best.name } : null,
+    };
+  });
+
+  // Stable ordering — descending by avg_score_pct so the strongest
+  // program is at the top of the chart/table.
+  programs.sort((a, b) => b.avg_score_pct - a.avg_score_pct);
+
+  res.json({ programs });
+});
+
+// =============================================================
+// F1.C — per-batch attendance % for the current week, used to
+// render the horizontal bar chart on the dashboard. Single trip
+// to the DB; date math in SQL.
+// =============================================================
+router.get("/dashboard/attendance-by-batch", authMiddleware, async (_req, res): Promise<void> => {
+  const rows = await db.execute<{ batch_id: number; batch_name: string; pct: string }>(sql`
+    SELECT b.id AS batch_id, b.name AS batch_name,
+           COALESCE(ROUND(100.0 * SUM(CASE WHEN a.status='present' THEN 1 ELSE 0 END)::numeric
+                          / NULLIF(COUNT(a.id), 0), 1), 0) AS pct
+    FROM batches b
+    LEFT JOIN attendance a
+      ON a.batch_id = b.id
+     AND a.attend_date::date >= (NOW() - INTERVAL '7 days')::date
+    WHERE b.deleted_at IS NULL
+      AND b.status != 'closed'
+    GROUP BY b.id, b.name
+    ORDER BY b.name
+  `);
+  const list = ((rows.rows ?? rows) as Array<{ batch_id: number; batch_name: string; pct: string }>).map((r) => ({
+    batchId: Number(r.batch_id),
+    batchName: r.batch_name,
+    attendancePct: Number(r.pct ?? 0),
+  }));
+  res.json(list);
+});
+
+// =============================================================
+// F1.D — clearance-rate summary per batch (admin/coordinator view).
+// =============================================================
+router.get("/dashboard/clearance-summary", authMiddleware, async (_req, res): Promise<void> => {
+  const rows = await db.execute<{ batch_id: number; name: string; threshold: string; actual: string | null }>(sql`
+    SELECT b.id AS batch_id, b.name, b.clearance_rate::text AS threshold,
+           CASE
+             WHEN COUNT(a.id) = 0 THEN NULL
+             ELSE ROUND(100.0 * SUM(CASE WHEN a.passed THEN 1 ELSE 0 END)::numeric
+                       / NULLIF(COUNT(a.id), 0), 2)::text
+           END AS actual
+    FROM batches b
+    LEFT JOIN assessments a ON a.batch_id = b.id
+    WHERE b.deleted_at IS NULL
+    GROUP BY b.id, b.name, b.clearance_rate
+    ORDER BY b.name
+  `);
+  const list = ((rows.rows ?? rows) as Array<{ batch_id: number; name: string; threshold: string; actual: string | null }>).map((r) => ({
+    batchId: Number(r.batch_id),
+    batchName: r.name,
+    threshold: Number(r.threshold ?? 70),
+    actual: r.actual == null ? null : Number(r.actual),
+  }));
+  res.json(list);
 });
 
 export default router;

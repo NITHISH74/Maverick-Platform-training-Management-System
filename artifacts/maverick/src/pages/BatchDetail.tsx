@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRoute } from "wouter";
-import { useGetBatch, getGetBatchQueryKey, useListBatchCandidates, getListBatchCandidatesQueryKey, useListAttendance, getListAttendanceQueryKey, useListAssessments, getListAssessmentsQueryKey, useListToppers, getListToppersQueryKey, useGetAttendanceSummary, getGetAttendanceSummaryQueryKey, useCreateCandidate, useDeleteCandidate, useUpdateBatch, useListUsers } from "@workspace/api-client-react";
+import { useGetBatch, getGetBatchQueryKey, useListBatchCandidates, getListBatchCandidatesQueryKey, useListAttendance, getListAttendanceQueryKey, useListAssessments, getListAssessmentsQueryKey, useListToppers, getListToppersQueryKey, useGetAttendanceSummary, getGetAttendanceSummaryQueryKey, useCreateCandidate, useDeleteCandidate, useUpdateBatch, useListUsers, useUpdateBatchStatus } from "@workspace/api-client-react";
+import { useToast } from "@/hooks/use-toast";
+import { Lock } from "lucide-react";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -74,7 +76,20 @@ export default function BatchDetail({ params }: { params: { id: string } }) {
             <div>
               <div className="flex items-center gap-3">
                 <h1 className="text-2xl font-bold tracking-tight">{batch.name}</h1>
-                <Badge variant={batch.status === 'running' ? 'default' : 'secondary'} className="uppercase text-xs">{batch.status}</Badge>
+                <Badge
+                  variant={batch.status === 'running' ? 'default' : 'secondary'}
+                  className={
+                    "uppercase text-xs " +
+                    (batch.status === "closed"
+                      ? "bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200"
+                      : "")
+                  }
+                >
+                  {batch.status}
+                </Badge>
+                {/* F5: manual Close batch — coord/admin only, only visible when
+                    batch is completed OR today > end_date. */}
+                <CloseBatchButton batch={batch} />
               </div>
               <p className="text-muted-foreground font-mono mt-1 text-sm">{batch.batchCode} • {batch.program}</p>
             </div>
@@ -328,6 +343,9 @@ export default function BatchDetail({ params }: { params: { id: string } }) {
             </Card>
           </TabsContent>
         </Tabs>
+
+        {/* V6 F1: Attendance Settings — coordinator/admin only. */}
+        {canManage && <AttendanceSettingsSection batchId={id} />}
 
         {/* Feedback Intelligence (F3) — appended at the bottom; no existing
             batch-detail content was removed or reordered. */}
@@ -601,5 +619,175 @@ function AssignTrainersDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+// =============================================================
+// V6 F1: per-batch attendance due-time settings.
+// Reads / writes /api/batches/:id/attendance-settings.
+// =============================================================
+function AttendanceSettingsSection({ batchId }: { batchId: number }) {
+  const { toast } = useToast();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [dueTime, setDueTime] = useState("10:00");
+  const [enabled, setEnabled] = useState(true);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const token = localStorage.getItem("token") ?? "";
+      const r = await fetch(`/api/batches/${batchId}/attendance-settings`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok) { if (!cancelled) setLoading(false); return; }
+      const d = await r.json();
+      if (cancelled) return;
+      setDueTime(typeof d.dueTime === "string" ? d.dueTime.slice(0, 5) : "10:00");
+      setEnabled(d.enabled !== false);
+      setUpdatedAt(d.updatedAt ?? null);
+      setLoading(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [batchId]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      const token = localStorage.getItem("token") ?? "";
+      const r = await fetch(`/api/batches/${batchId}/attendance-settings`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ due_time: dueTime.length === 5 ? `${dueTime}:00` : dueTime, enabled }),
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err?.error ?? `HTTP ${r.status}`);
+      }
+      const d = await r.json();
+      setUpdatedAt(d.updatedAt ?? new Date().toISOString());
+      toast({ title: "Attendance settings saved", description: `Due time set to ${dueTime} IST.` });
+    } catch (e) {
+      toast({ title: "Save failed", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Attendance Settings</CardTitle>
+        <CardDescription>Daily cut-off after which a missing-attendance email is sent to the coordinator.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {loading ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : (
+          <>
+            <div className="flex items-end gap-4 flex-wrap">
+              <div className="space-y-1.5">
+                <Label>Daily attendance due time</Label>
+                <div className="flex items-center gap-2">
+                  <Input
+                    type="time"
+                    value={dueTime}
+                    onChange={e => setDueTime(e.target.value)}
+                    className="w-36"
+                  />
+                  <span className="text-xs text-muted-foreground">(IST)</span>
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-sm pb-2">
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={e => setEnabled(e.target.checked)}
+                  className="h-4 w-4"
+                />
+                Enable cut-off alerts
+              </label>
+              <Button onClick={handleSave} disabled={saving}>
+                {saving ? "Saving…" : "Save"}
+              </Button>
+            </div>
+            {updatedAt && (
+              <p className="text-xs text-muted-foreground">
+                Last updated: {format(new Date(updatedAt), "MMM d, yyyy 'at' HH:mm")}
+              </p>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// =============================================================
+// F5: Close batch button — coordinator/admin only. Visible when the
+// batch is in status 'completed' OR today > end_date. Posts to the
+// existing PATCH /api/batches/:id/status with { status: 'closed' }.
+// =============================================================
+function CloseBatchButton({ batch }: { batch: { id: number; name: string; status: string; endDate: string } }) {
+  const { user } = useAuth();
+  const { toast } = useToast();
+  const updateStatus = useUpdateBatchStatus();
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+
+  const canSeeButton = user?.role === "admin" || user?.role === "coordinator";
+  if (!canSeeButton) return null;
+  if (batch.status === "closed") return null;
+
+  const past = new Date(batch.endDate) < new Date(new Date().toISOString().slice(0, 10));
+  const eligible = batch.status === "completed" || past;
+  if (!eligible) return null;
+
+  function onConfirm() {
+    updateStatus.mutate(
+      { id: batch.id, data: { status: "closed" as any } },
+      {
+        onSuccess: () => {
+          toast({ title: "Batch closed", description: `${batch.name} is now closed.` });
+          setOpen(false);
+          qc.invalidateQueries({ queryKey: getGetBatchQueryKey(batch.id) });
+          qc.invalidateQueries({ queryKey: ["listBatches"] });
+        },
+        onError: (e) => {
+          toast({
+            title: "Failed to close",
+            description: e instanceof Error ? e.message : String(e),
+            variant: "destructive",
+          });
+        },
+      },
+    );
+  }
+
+  return (
+    <>
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)} className="gap-1.5">
+        <Lock className="h-3.5 w-3.5" />
+        Close Batch
+      </Button>
+      <Dialog open={open} onOpenChange={(v) => !v && setOpen(false)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Close this batch?</DialogTitle>
+            <DialogDescription>
+              No further attendance or assessments can be recorded for <span className="font-medium">{batch.name}</span> after it is closed.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={updateStatus.isPending}>Cancel</Button>
+            <Button onClick={onConfirm} disabled={updateStatus.isPending}>
+              {updateStatus.isPending ? "Closing…" : "Close batch"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

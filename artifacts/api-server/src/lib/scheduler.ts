@@ -14,12 +14,20 @@
 import { logger } from "./logger";
 import { runMonitoringScan } from "./monitoring-engine";
 import { getMonitoringConfig } from "./monitoring-recipients";
+import { runNotificationHeartbeat } from "./notification-jobs";
+import { db, batchesTable } from "@workspace/db";
+import { and, isNull, lt, ne, sql } from "drizzle-orm";
+import { writeAudit } from "./rbac";
 
 const AI_BASE = process.env.AI_SERVICE_URL ?? "http://localhost:9000";
 const INTERNAL_TOKEN = process.env.AI_INTERNAL_TOKEN ?? "smoke-test-secret-1234567890";
 const AI_TIMEOUT_MS = Number(process.env.AI_AGENT_TIMEOUT_MS ?? 90_000);
 
 let _cronTask: { stop: () => void } | null = null;
+// V6: hourly notification heartbeat. Separate from the main monitoring
+// scan because the cut-off / assessment-reminder jobs only need an
+// hourly resolution and shouldn't wait for the daily scan window.
+let _notifTask: { stop: () => void } | null = null;
 
 async function invokeAiAgent(): Promise<{ ok: boolean; detail?: string }> {
   const controller = new AbortController();
@@ -40,8 +48,45 @@ async function invokeAiAgent(): Promise<{ ok: boolean; detail?: string }> {
   }
 }
 
+// F5: auto-close every non-deleted, non-closed batch whose end_date is
+// already in the past. Exposed separately so it can be unit-tested in
+// isolation. Returns the closed batch IDs for the caller's log.
+export async function autoCloseExpiredBatches(): Promise<number[]> {
+  try {
+    const closed = await db.update(batchesTable)
+      .set({ status: "closed" })
+      .where(and(
+        isNull(batchesTable.deletedAt),
+        ne(batchesTable.status, "closed"),
+        // text column — string-compare in ISO yyyy-mm-dd is correct
+        lt(batchesTable.endDate, sql`CURRENT_DATE::text`),
+      ))
+      .returning({ id: batchesTable.id, name: batchesTable.name, endDate: batchesTable.endDate });
+    for (const b of closed) {
+      await writeAudit({
+        actorId: null,
+        action: "batch_auto_closed",
+        entityType: "batch",
+        entityId: b.id,
+        details: { name: b.name, end_date: b.endDate, reason: "end_date < CURRENT_DATE" },
+      });
+    }
+    if (closed.length > 0) {
+      logger.info({ closedBatchIds: closed.map((b) => b.id) }, "scheduler: auto-closed expired batches");
+    }
+    return closed.map((b) => b.id);
+  } catch (e) {
+    logger.error({ err: e }, "scheduler: auto-close failed");
+    return [];
+  }
+}
+
 async function runOnce(): Promise<void> {
   logger.info("scheduler: scan starting");
+
+  // F5: cheap daily auto-close BEFORE the monitoring scan — that way the
+  // monitor doesn't try to scan a batch that's already past end_date.
+  await autoCloseExpiredBatches();
 
   // Try LLM path first
   if (process.env.ENABLE_AI_AGENT !== "false") {
@@ -110,6 +155,15 @@ export async function startMonitoringScheduler(): Promise<void> {
     runOnce().catch((e) => logger.error({ err: e }, "scheduler: runOnce threw"));
   });
   logger.info({ cronExpr }, "scheduler: started");
+
+  // V6: hourly notification heartbeat (cut-off, 3-day absence, +1d assessment).
+  if (_notifTask) { _notifTask.stop(); _notifTask = null; }
+  if (cron!.validate("0 * * * *")) {
+    _notifTask = cron!.schedule("0 * * * *", () => {
+      runNotificationHeartbeat().catch((e) => logger.error({ err: e }, "scheduler: notification heartbeat threw"));
+    });
+    logger.info("scheduler: hourly notification heartbeat started");
+  }
 }
 
 /**
@@ -117,4 +171,12 @@ export async function startMonitoringScheduler(): Promise<void> {
  */
 export async function runMonitoringNow(): Promise<void> {
   await runOnce();
+}
+
+/**
+ * V6 on-demand trigger — runs the notification heartbeat without
+ * waiting for the next hourly tick. Used by tests + the internal route.
+ */
+export async function runNotificationsNow(): Promise<void> {
+  await runNotificationHeartbeat();
 }

@@ -8,12 +8,14 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Link } from "wouter";
-import { Users, Calendar, ArrowRight, Plus } from "lucide-react";
+import { Link, useLocation } from "wouter";
+import { Users, Calendar, ArrowRight, Plus, Upload, Trash2 } from "lucide-react";
 import { format } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
+import { useToast } from "@/hooks/use-toast";
 
 function CreateBatchDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const queryClient = useQueryClient();
@@ -154,16 +156,154 @@ function CreateBatchDialog({ open, onClose }: { open: boolean; onClose: () => vo
   );
 }
 
+// F4: admin-only delete with double confirmation. Requires the admin to
+// type the batch name verbatim before the Delete button enables.
+function DeleteBatchDialog({
+  batch, open, onClose, onDeleted,
+}: {
+  batch: { id: number; name: string } | null;
+  open: boolean;
+  onClose: () => void;
+  onDeleted: () => void;
+}) {
+  const { token } = useAuth();
+  const { toast } = useToast();
+  const [typed, setTyped] = useState("");
+  const [busy, setBusy] = useState(false);
+  const ready = !!batch && typed.trim() === batch.name;
+
+  async function confirm() {
+    if (!batch || !token || !ready) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/batches/${batch.id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+      toast({ title: "Batch deleted", description: `${batch.name} (soft-deleted; recoverable from DB).` });
+      onDeleted();
+      onClose();
+      setTyped("");
+    } catch (e) {
+      toast({ title: "Delete failed", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { if (!v) { onClose(); setTyped(""); } }}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete {batch?.name}?</DialogTitle>
+          <DialogDescription>
+            This will also remove all attendance, assessment, and feedback records for this batch.
+            This cannot be undone.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label>Type the batch name to confirm.</Label>
+          <Input placeholder={batch?.name ?? ""} value={typed} onChange={(e) => setTyped(e.target.value)} />
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => { onClose(); setTyped(""); }} disabled={busy}>Cancel</Button>
+          <Button
+            variant="destructive"
+            onClick={confirm}
+            disabled={!ready || busy}
+          >
+            {busy ? "Deleting…" : "Delete batch"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function BatchGrid({
+  batches, onDelete, isAdmin,
+}: {
+  batches: Array<{ id: number; name: string; batchCode: string; status: string; candidateCount?: number | null; capacity: number; startDate: string; endDate: string }>;
+  onDelete: (b: { id: number; name: string }) => void;
+  isAdmin: boolean;
+}) {
+  if (batches.length === 0) {
+    return <p className="text-center py-10 text-sm text-muted-foreground">No batches in this view.</p>;
+  }
+  return (
+    <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+      {batches.map((batch) => (
+        <Card key={batch.id} className="flex flex-col hover-elevate transition-all group">
+          <CardHeader className="pb-2 flex-row justify-between items-start space-y-0">
+            <div>
+              <CardTitle className="text-lg">{batch.name}</CardTitle>
+              <p className="text-sm text-muted-foreground font-mono">{batch.batchCode}</p>
+            </div>
+            <Badge
+              variant={batch.status === "running" ? "default" : "secondary"}
+              className={batch.status === "closed" ? "bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200" : ""}
+            >
+              {batch.status}
+            </Badge>
+          </CardHeader>
+          <CardContent className="flex-1 flex flex-col justify-between">
+            <div className="space-y-3 mb-6 mt-2">
+              <div className="flex items-center text-sm text-muted-foreground">
+                <Users className="mr-2 h-4 w-4" />
+                {batch.candidateCount || 0} / {batch.capacity} candidates
+              </div>
+              <div className="flex items-center text-sm text-muted-foreground">
+                <Calendar className="mr-2 h-4 w-4" />
+                {format(new Date(batch.startDate), "MMM d")} - {format(new Date(batch.endDate), "MMM d, yyyy")}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <Button asChild variant="outline" className="flex-1 group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
+                <Link href={`/batches/${batch.id}`}>
+                  View Details
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Link>
+              </Button>
+              {isAdmin && (
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  title="Delete batch"
+                  onClick={() => onDelete({ id: batch.id, name: batch.name })}
+                  className="text-destructive hover:text-destructive"
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
 export default function Batches() {
   const [showCreate, setShowCreate] = useState(false);
+  const [deletingBatch, setDeletingBatch] = useState<{ id: number; name: string } | null>(null);
   const { data: batches, isLoading } = useListBatches();
   const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const [, navigate] = useLocation();
   const canManage = user?.role === "admin" || user?.role === "coordinator";
+  const isAdmin = user?.role === "admin";
+
+  // F5: split closed batches into a separate tab so the default view stays focused
+  // on live work.
+  const all = batches ?? [];
+  const live = all.filter((b: any) => b.status !== "closed");
+  const closed = all.filter((b: any) => b.status === "closed");
 
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Batches</h1>
             <p className="text-muted-foreground">
@@ -171,14 +311,27 @@ export default function Batches() {
             </p>
           </div>
           {canManage && (
-            <Button onClick={() => setShowCreate(true)}>
-              <Plus className="mr-2 h-4 w-4" />
-              Create Batch
-            </Button>
+            <div className="flex gap-2">
+              {/* F3: Bulk Import navigates to /candidates with auto-open query param. */}
+              <Button variant="outline" onClick={() => navigate("/candidates?openBulkImport=true")}>
+                <Upload className="mr-2 h-4 w-4" />
+                Bulk Import Candidates
+              </Button>
+              <Button onClick={() => setShowCreate(true)}>
+                <Plus className="mr-2 h-4 w-4" />
+                Create Batch
+              </Button>
+            </div>
           )}
         </div>
 
         <CreateBatchDialog open={showCreate} onClose={() => setShowCreate(false)} />
+        <DeleteBatchDialog
+          batch={deletingBatch}
+          open={!!deletingBatch}
+          onClose={() => setDeletingBatch(null)}
+          onDeleted={() => queryClient.invalidateQueries({ queryKey: ["listBatches"] })}
+        />
 
         {isLoading ? (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
@@ -195,39 +348,21 @@ export default function Batches() {
             ))}
           </div>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-            {batches?.map((batch) => (
-              <Card key={batch.id} className="flex flex-col hover-elevate transition-all group">
-                <CardHeader className="pb-2 flex-row justify-between items-start space-y-0">
-                  <div>
-                    <CardTitle className="text-lg">{batch.name}</CardTitle>
-                    <p className="text-sm text-muted-foreground font-mono">{batch.batchCode}</p>
-                  </div>
-                  <Badge variant={batch.status === "running" ? "default" : "secondary"}>
-                    {batch.status}
-                  </Badge>
-                </CardHeader>
-                <CardContent className="flex-1 flex flex-col justify-between">
-                  <div className="space-y-3 mb-6 mt-2">
-                    <div className="flex items-center text-sm text-muted-foreground">
-                      <Users className="mr-2 h-4 w-4" />
-                      {batch.candidateCount || 0} / {batch.capacity} candidates
-                    </div>
-                    <div className="flex items-center text-sm text-muted-foreground">
-                      <Calendar className="mr-2 h-4 w-4" />
-                      {format(new Date(batch.startDate), "MMM d")} - {format(new Date(batch.endDate), "MMM d, yyyy")}
-                    </div>
-                  </div>
-                  <Button asChild variant="outline" className="w-full group-hover:bg-primary group-hover:text-primary-foreground transition-colors">
-                    <Link href={`/batches/${batch.id}`}>
-                      View Details
-                      <ArrowRight className="ml-2 h-4 w-4" />
-                    </Link>
-                  </Button>
-                </CardContent>
-              </Card>
-            ))}
-          </div>
+          <Tabs defaultValue="live">
+            <TabsList>
+              <TabsTrigger value="live">Live ({live.length})</TabsTrigger>
+              <TabsTrigger value="closed">
+                Closed
+                {closed.length > 0 && <span className="ml-1.5 text-xs text-muted-foreground">({closed.length})</span>}
+              </TabsTrigger>
+            </TabsList>
+            <TabsContent value="live" className="pt-4">
+              <BatchGrid batches={live as any} onDelete={setDeletingBatch} isAdmin={!!isAdmin} />
+            </TabsContent>
+            <TabsContent value="closed" className="pt-4">
+              <BatchGrid batches={closed as any} onDelete={setDeletingBatch} isAdmin={!!isAdmin} />
+            </TabsContent>
+          </Tabs>
         )}
       </div>
     </Layout>
