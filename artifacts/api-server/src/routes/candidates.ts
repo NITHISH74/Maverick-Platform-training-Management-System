@@ -167,11 +167,38 @@ router.post("/candidates/bulk-import", authMiddleware, requireRole("admin", "coo
     return;
   }
   const { batchId, candidates } = parsed.data;
-  let inserted = 0;
-  let failed = 0;
-  const errors: string[] = [];
 
-  for (const c of candidates) {
+  // V6 F3: surface ALL duplicates instead of silently treating them as failures.
+  // A duplicate = same name+batch OR same email+batch already on file.
+  const existing = await db
+    .select({ name: candidatesTable.name, email: candidatesTable.email })
+    .from(candidatesTable)
+    .where(eq(candidatesTable.batchId, batchId));
+  const existingNames = new Set(existing.map(r => r.name.trim().toLowerCase()));
+  const existingEmails = new Set(existing.map(r => (r.email ?? "").trim().toLowerCase()).filter(Boolean));
+
+  // Also dedup WITHIN the upload — if the user uploads the same name twice
+  // we want the second one in the duplicates list, not silently inserted.
+  const seenInBatch = new Set<string>();
+
+  let inserted = 0;
+  const duplicates: { row: number; name: string; email: string; reason: string }[] = [];
+  const errors: { row: number; name: string; reason: string }[] = [];
+
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    const rowNum = i + 2; // header row + 1-indexed
+    const nameKey = c.name.trim().toLowerCase();
+    const emailKey = c.email.trim().toLowerCase();
+
+    if (existingNames.has(nameKey) || seenInBatch.has(`n:${nameKey}`)) {
+      duplicates.push({ row: rowNum, name: c.name, email: c.email, reason: "Candidate name already exists in this batch" });
+      continue;
+    }
+    if (existingEmails.has(emailKey) || seenInBatch.has(`e:${emailKey}`)) {
+      duplicates.push({ row: rowNum, name: c.name, email: c.email, reason: "Candidate email already exists in this batch" });
+      continue;
+    }
     try {
       await db.insert(candidatesTable).values({
         candidateId: c.candidateId,
@@ -182,14 +209,28 @@ router.post("/candidates/bulk-import", authMiddleware, requireRole("admin", "coo
         status: "active",
       });
       inserted++;
+      seenInBatch.add(`n:${nameKey}`);
+      seenInBatch.add(`e:${emailKey}`);
     } catch (err: unknown) {
-      failed++;
       const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`${c.candidateId}: ${msg}`);
+      // Postgres unique-violation surfaces as a duplicate, not a failure.
+      if (/duplicate key|unique constraint/i.test(msg)) {
+        duplicates.push({ row: rowNum, name: c.name, email: c.email, reason: "Already exists (unique constraint)" });
+      } else {
+        errors.push({ row: rowNum, name: c.name, reason: msg });
+      }
     }
   }
 
-  res.status(201).json({ inserted, failed, errors });
+  // Back-compat: old client uses `failed` + `errors: string[]`. We keep both
+  // shapes so the existing Candidates.tsx doesn't break while the new UI
+  // reads `duplicates`.
+  res.status(201).json({
+    inserted,
+    failed: errors.length,
+    errors: errors.map(e => `Row ${e.row} (${e.name}): ${e.reason}`),
+    duplicates,
+  });
 });
 
 export default router;

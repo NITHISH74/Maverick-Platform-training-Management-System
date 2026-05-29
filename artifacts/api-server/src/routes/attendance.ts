@@ -7,6 +7,7 @@ import {
 } from "@workspace/api-zod";
 import { authMiddleware } from "../middlewares/auth";
 import { getTrainerBatchIds } from "../lib/rbac";
+import { createInAppNotification } from "../lib/notify";
 
 // Returns null when there is no trainer restriction; otherwise the list of
 // batch IDs the trainer is allowed to act on. Trainers with 0 batches are
@@ -98,16 +99,69 @@ router.post("/attendance/bulk", authMiddleware, async (req, res): Promise<void> 
   const dateStr = parsed.data.date instanceof Date
     ? parsed.data.date.toISOString().split("T")[0]
     : String(parsed.data.date);
-  const values = records.map(r => ({
-    candidateId: r.candidateId,
-    batchId,
-    date: dateStr,
-    status: r.status,
-    submittedById: req.userId ?? null,
-  }));
-  const inserted = await db.insert(attendanceTable).values(values).returning();
+
+  // V6 F3: detect (candidate_id, date) duplicates against existing rows AND
+  // within the upload itself, then insert the non-duplicates.
+  const existing = await db.select({ candidateId: attendanceTable.candidateId })
+    .from(attendanceTable)
+    .where(and(eq(attendanceTable.batchId, batchId), eq(attendanceTable.date, dateStr)));
+  const existingIds = new Set(existing.map(e => e.candidateId));
+  const seenInUpload = new Set<number>();
+
+  // For nicer duplicate rows, look up candidate names once.
+  const candIds = Array.from(new Set(records.map(r => r.candidateId)));
+  const candNames = candIds.length > 0
+    ? await db.select({ id: candidatesTable.id, name: candidatesTable.name })
+        .from(candidatesTable).where(inArray(candidatesTable.id, candIds))
+    : [];
+  const nameById = new Map(candNames.map(c => [c.id, c.name]));
+
+  const toInsert: typeof records = [];
+  const duplicates: { row: number; name: string; date: string; reason: string }[] = [];
+  records.forEach((r, i) => {
+    if (existingIds.has(r.candidateId) || seenInUpload.has(r.candidateId)) {
+      duplicates.push({
+        row: i + 2,
+        name: nameById.get(r.candidateId) ?? `Candidate #${r.candidateId}`,
+        date: dateStr,
+        reason: "Attendance already recorded for this date",
+      });
+      return;
+    }
+    seenInUpload.add(r.candidateId);
+    toInsert.push(r);
+  });
+
+  const inserted = toInsert.length > 0
+    ? await db.insert(attendanceTable).values(toInsert.map(r => ({
+        candidateId: r.candidateId,
+        batchId,
+        date: dateStr,
+        status: r.status,
+        submittedById: req.userId ?? null,
+      }))).returning()
+    : [];
+
+  // V6 F4.A: in-app upload confirmation for the uploader.
+  if (req.userId && inserted.length > 0) {
+    const [batch] = await db.select({ name: batchesTable.name }).from(batchesTable).where(eq(batchesTable.id, batchId));
+    await createInAppNotification({
+      userId: req.userId,
+      title: "Attendance uploaded",
+      message: `Attendance for ${batch?.name ?? `batch #${batchId}`} uploaded successfully — ${inserted.length} record${inserted.length === 1 ? "" : "s"} processed.`,
+      type: "upload_success",
+      relatedEntityType: "batch",
+      relatedEntityId: batchId,
+    });
+  }
+
   const enriched = await Promise.all(inserted.map(enrichAttendance));
-  res.status(201).json(enriched);
+  res.status(201).json({
+    inserted: enriched.length,
+    records: enriched,
+    duplicates,
+    errors: [],
+  });
 });
 
 router.get("/attendance/summary", authMiddleware, async (req, res): Promise<void> => {

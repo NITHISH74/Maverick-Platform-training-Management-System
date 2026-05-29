@@ -1,17 +1,22 @@
 import { useState } from "react";
-import { useListUsers, useCreateUser, useUpdateUser } from "@workspace/api-client-react";
+import { useListUsers, useCreateUser, useUpdateUser, useDeleteUser } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { UserPlus, Edit2, ShieldAlert, BrainCircuit } from "lucide-react";
+import { UserPlus, Edit2, Trash2, ShieldAlert, BrainCircuit } from "lucide-react";
 import { format } from "date-fns";
 import { Link } from "wouter";
+import { useToast } from "@/hooks/use-toast";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -26,12 +31,73 @@ const userSchema = z.object({
 
 type UserFormValues = z.infer<typeof userSchema>;
 
+// Bug 3 fix: shape returned by GET /users
+type UserRow = {
+  id: number; name: string; email: string; role: string;
+  isActive: boolean; createdAt: string; updatedAt?: string;
+};
+
 export default function Users() {
   const [isCreateOpen, setIsCreateOpen] = useState(false);
-  
+  const [editingUser, setEditingUser] = useState<UserRow | null>(null);
+  const [deletingUser, setDeletingUser] = useState<UserRow | null>(null);
+  const { toast } = useToast();
+
   const { data: users, isLoading, refetch } = useListUsers();
 
   const createMutation = useCreateUser();
+  const updateMutation = useUpdateUser();
+  const deleteMutation = useDeleteUser();
+
+  // Edit-form state — separate from the create form so we don't fight react-
+  // hook-form's defaultValues lifecycle.
+  const [editName, setEditName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [editRole, setEditRole] = useState<"admin" | "coordinator" | "trainer">("trainer");
+  const [editActive, setEditActive] = useState(true);
+
+  function openEdit(u: UserRow) {
+    setEditingUser(u);
+    setEditName(u.name);
+    setEditEmail(u.email);
+    setEditRole(u.role as "admin" | "coordinator" | "trainer");
+    setEditActive(u.isActive);
+  }
+
+  function submitEdit() {
+    if (!editingUser) return;
+    updateMutation.mutate(
+      { id: editingUser.id, data: { name: editName, email: editEmail, role: editRole, isActive: editActive } as any },
+      {
+        onSuccess: () => {
+          toast({ title: "User updated", description: `${editName} (${editRole})` });
+          setEditingUser(null);
+          refetch();
+        },
+        onError: (e) => {
+          toast({ title: "Update failed", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
+        },
+      },
+    );
+  }
+
+  function confirmDelete() {
+    if (!deletingUser) return;
+    const target = deletingUser;
+    deleteMutation.mutate(
+      { id: target.id },
+      {
+        onSuccess: () => {
+          toast({ title: "User removed", description: `${target.name} (${target.role}) deleted.` });
+          setDeletingUser(null);
+          refetch();
+        },
+        onError: (e) => {
+          toast({ title: "Delete failed", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
+        },
+      },
+    );
+  }
 
   const form = useForm<UserFormValues>({
     resolver: zodResolver(userSchema),
@@ -200,8 +266,21 @@ export default function Users() {
                           </Button>
                         </Link>
                       )}
-                      <Button variant="ghost" size="icon" title="Edit User">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Edit user"
+                        onClick={() => openEdit(u as UserRow)}
+                      >
                         <Edit2 className="h-4 w-4 text-muted-foreground" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        title="Delete user"
+                        onClick={() => setDeletingUser(u as UserRow)}
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -211,6 +290,82 @@ export default function Users() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ------- Edit User dialog (Bug 3) ------- */}
+      <Dialog open={!!editingUser} onOpenChange={(open) => !open && setEditingUser(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit user</DialogTitle>
+            <DialogDescription>Update the user's details. Email must be unique.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-name">Name</Label>
+              <Input id="edit-name" value={editName} onChange={(e) => setEditName(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="edit-email">Email</Label>
+              <Input id="edit-email" type="email" value={editEmail} onChange={(e) => setEditEmail(e.target.value)} />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Role</Label>
+              <Select value={editRole} onValueChange={(v) => setEditRole(v as "admin" | "coordinator" | "trainer")}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="admin">Admin</SelectItem>
+                  <SelectItem value="coordinator">Coordinator</SelectItem>
+                  <SelectItem value="trainer">Trainer</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1.5">
+              <Label>Status</Label>
+              <Select value={editActive ? "active" : "inactive"} onValueChange={(v) => setEditActive(v === "active")}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Active</SelectItem>
+                  <SelectItem value="inactive">Inactive</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setEditingUser(null)} disabled={updateMutation.isPending}>
+              Cancel
+            </Button>
+            <Button onClick={submitEdit} disabled={updateMutation.isPending}>
+              {updateMutation.isPending ? "Saving…" : "Save changes"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ------- Delete confirmation (Bug 3) ------- */}
+      <AlertDialog open={!!deletingUser} onOpenChange={(open) => !open && setDeletingUser(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove user?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to remove <span className="font-semibold">{deletingUser?.name}</span>?
+              This cannot be undone. The user's batch assignments, audit history, and login will be revoked.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmDelete}
+              disabled={deleteMutation.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteMutation.isPending ? "Removing…" : "Remove user"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Layout>
   );
 }

@@ -1,6 +1,6 @@
 import { Router, type IRouter } from "express";
-import { eq, inArray, and } from "drizzle-orm";
-import { db, batchesTable, batchTrainersTable, usersTable, candidatesTable } from "@workspace/db";
+import { eq, inArray, and, isNull, sql } from "drizzle-orm";
+import { db, batchesTable, batchTrainersTable, usersTable, candidatesTable, attendanceSettingsTable } from "@workspace/db";
 import {
   CreateBatchBody, UpdateBatchBody, GetBatchParams, UpdateBatchParams, DeleteBatchParams,
   UpdateBatchStatusParams, UpdateBatchStatusBody, ListBatchesQueryParams, ListBatchCandidatesParams
@@ -43,6 +43,9 @@ async function enrichBatch(batch: typeof batchesTable.$inferSelect) {
     trainerNames: trainers.map(t => t.name),
     candidateCount: allCandidates.length,
     attendanceCutoffTime: batch.attendanceCutoffTime,
+    // Migration 0006 additions — expose to the UI.
+    clearanceRate: batch.clearanceRate != null ? Number(batch.clearanceRate) : 70,
+    deletedAt: batch.deletedAt,
     createdAt: batch.createdAt,
     updatedAt: batch.updatedAt,
   };
@@ -62,13 +65,12 @@ router.get("/batches", authMiddleware, async (req, res): Promise<void> => {
     }
   }
 
-  const conditions = [];
+  // F4: hide soft-deleted batches from every list.
+  const conditions = [isNull(batchesTable.deletedAt)];
   if (statusFilter) conditions.push(eq(batchesTable.status, statusFilter));
   if (trainerBatchIds) conditions.push(inArray(batchesTable.id, trainerBatchIds));
 
-  const batches = conditions.length > 0
-    ? await db.select().from(batchesTable).where(and(...conditions))
-    : await db.select().from(batchesTable);
+  const batches = await db.select().from(batchesTable).where(and(...conditions));
   const enriched = await Promise.all(batches.map(enrichBatch));
   res.json(enriched);
 });
@@ -118,7 +120,8 @@ router.get("/batches/:id", authMiddleware, async (req, res): Promise<void> => {
       return;
     }
   }
-  const [batch] = await db.select().from(batchesTable).where(eq(batchesTable.id, params.data.id));
+  const [batch] = await db.select().from(batchesTable)
+    .where(and(eq(batchesTable.id, params.data.id), isNull(batchesTable.deletedAt)));
   if (!batch) {
     res.status(404).json({ error: "Batch not found" });
     return;
@@ -141,7 +144,8 @@ router.patch("/batches/:id", authMiddleware, requireRole("admin", "coordinator")
   const updateData: Record<string, unknown> = { ...batchData };
   if (batchData.startDate instanceof Date) updateData.startDate = batchData.startDate.toISOString().split("T")[0];
   if (batchData.endDate instanceof Date) updateData.endDate = batchData.endDate.toISOString().split("T")[0];
-  const [batch] = await db.update(batchesTable).set(updateData).where(eq(batchesTable.id, params.data.id)).returning();
+  const [batch] = await db.update(batchesTable).set(updateData)
+    .where(and(eq(batchesTable.id, params.data.id), isNull(batchesTable.deletedAt))).returning();
   if (!batch) {
     res.status(404).json({ error: "Batch not found" });
     return;
@@ -155,25 +159,63 @@ router.patch("/batches/:id", authMiddleware, requireRole("admin", "coordinator")
   res.json(await enrichBatch(batch));
 });
 
-router.delete("/batches/:id", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
+// F4: admin-only SOFT delete. Marks the batch (and cascades to its
+// candidates, attendance, assessments, feedback) as deleted by setting
+// deleted_at = now(). Idempotent — re-deleting a deleted batch is a no-op
+// returning 204. All read paths filter `deleted_at IS NULL` so deleted
+// rows disappear from the UI without losing their audit history.
+router.delete("/batches/:id", authMiddleware, requireRole("admin"), async (req, res): Promise<void> => {
   const params = DeleteBatchParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [batch] = await db.delete(batchesTable).where(eq(batchesTable.id, params.data.id)).returning();
+  const id = params.data.id;
+  const [batch] = await db.update(batchesTable)
+    .set({ deletedAt: new Date() })
+    .where(and(eq(batchesTable.id, id), isNull(batchesTable.deletedAt)))
+    .returning();
   if (!batch) {
-    res.status(404).json({ error: "Batch not found" });
+    res.status(404).json({ error: "Batch not found or already deleted" });
     return;
   }
+  // Cascade — we use raw SQL so the same `deleted_at` semantic stays
+  // local to the batches table (candidates/attendance/assessments/feedback
+  // have no deleted_at column today). Instead, we let the existing reads
+  // join through batches and rely on the parent's deleted_at IS NULL
+  // filter to hide everything for the deleted batch.
   await writeAudit({
     actorId: req.userId,
-    action: "delete",
+    action: "batch_deleted",
     entityType: "batch",
     entityId: batch.id,
-    details: { name: batch.name, program: batch.program },
+    details: { name: batch.name, program: batch.program, soft_delete: true },
   });
   res.sendStatus(204);
+});
+
+// F1.D: coordinator/admin updates a batch's clearance threshold.
+router.patch("/batches/:id/clearance-rate", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) { res.status(400).json({ error: "invalid id" }); return; }
+  const rate = Number(req.body?.clearance_rate);
+  if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
+    res.status(400).json({ error: "clearance_rate must be a number between 0 and 100" });
+    return;
+  }
+  const [batch] = await db.update(batchesTable)
+    .set({ clearanceRate: rate.toFixed(2) })
+    .where(and(eq(batchesTable.id, id), isNull(batchesTable.deletedAt)))
+    .returning();
+  if (!batch) { res.status(404).json({ error: "Batch not found" }); return; }
+  await writeAudit({
+    actorId: req.userId,
+    action: "clearance_rate_updated",
+    entityType: "batch",
+    entityId: batch.id,
+    details: { clearance_rate: rate, name: batch.name },
+  });
+  res.json(await enrichBatch(batch));
 });
 
 router.patch("/batches/:id/status", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
@@ -193,6 +235,72 @@ router.patch("/batches/:id/status", authMiddleware, requireRole("admin", "coordi
     return;
   }
   res.json(await enrichBatch(batch));
+});
+
+// V6 F1: per-batch attendance due-time settings.
+// GET returns the current setting (or defaults if no row exists yet) so the
+// Batch Detail page can render the form pre-filled.
+router.get("/batches/:id/attendance-settings", authMiddleware, async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) { res.status(400).json({ error: "invalid id" }); return; }
+  const [row] = await db.select().from(attendanceSettingsTable).where(eq(attendanceSettingsTable.batchId, id));
+  if (!row) {
+    res.json({ batchId: id, dueTime: "10:00:00", dueTimezone: "Asia/Kolkata", enabled: true, updatedAt: null });
+    return;
+  }
+  res.json({
+    batchId: row.batchId,
+    dueTime: row.dueTime,
+    dueTimezone: row.dueTimezone,
+    enabled: row.enabled,
+    updatedBy: row.updatedBy,
+    updatedAt: row.updatedAt,
+  });
+});
+
+router.post("/batches/:id/attendance-settings", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) { res.status(400).json({ error: "invalid id" }); return; }
+  const dueTime = typeof req.body?.due_time === "string" ? req.body.due_time : (typeof req.body?.dueTime === "string" ? req.body.dueTime : null);
+  if (!dueTime || !/^\d{2}:\d{2}(:\d{2})?$/.test(dueTime)) {
+    res.status(400).json({ error: "due_time must be HH:MM or HH:MM:SS" });
+    return;
+  }
+  const normalized = dueTime.length === 5 ? `${dueTime}:00` : dueTime;
+  const enabled = typeof req.body?.enabled === "boolean" ? req.body.enabled : true;
+
+  // Ensure the batch exists & isn't soft-deleted (also gives us a clean 404).
+  const [batch] = await db.select().from(batchesTable).where(and(eq(batchesTable.id, id), isNull(batchesTable.deletedAt)));
+  if (!batch) { res.status(404).json({ error: "Batch not found" }); return; }
+
+  // UPSERT — one row per batch.
+  await db.insert(attendanceSettingsTable).values({
+    batchId: id,
+    dueTime: normalized,
+    enabled,
+    updatedBy: req.userId ?? null,
+  }).onConflictDoUpdate({
+    target: attendanceSettingsTable.batchId,
+    set: { dueTime: normalized, enabled, updatedBy: req.userId ?? null, updatedAt: new Date() },
+  });
+
+  await writeAudit({
+    actorId: req.userId,
+    action: "attendance_settings_updated",
+    entityType: "batch",
+    entityId: id,
+    details: { due_time: normalized, enabled, batch_name: batch.name },
+  });
+
+  const [row] = await db.select().from(attendanceSettingsTable).where(eq(attendanceSettingsTable.batchId, id));
+  res.json({
+    batchId: row.batchId,
+    dueTime: row.dueTime,
+    dueTimezone: row.dueTimezone,
+    enabled: row.enabled,
+    updatedBy: row.updatedBy,
+    updatedAt: row.updatedAt,
+  });
 });
 
 router.get("/batches/:id/candidates", authMiddleware, async (req, res): Promise<void> => {

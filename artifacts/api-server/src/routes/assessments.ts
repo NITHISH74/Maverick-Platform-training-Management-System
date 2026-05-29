@@ -92,6 +92,20 @@ router.get("/assessments", authMiddleware, async (req, res): Promise<void> => {
 // Creating an assessment really means: insert one row per candidate in the
 // batch with score=0, uploadedBy=current user. Trainers can do this for their
 // own batches; admin/coordinator unrestricted.
+// Map the frontend / OpenAPI assessment_type values to the Postgres enum
+// values from migration 0001 — `assessment_type` accepts only
+// ('sprint','api','project'). Without this mapping a payload like
+// `type: "sprint_review"` lands as an invalid enum value and the INSERT
+// throws, surfacing as an unhelpful 500. See Bug 1.
+const ASSESSMENT_TYPE_MAP: Record<string, string> = {
+  sprint: "sprint",
+  sprint_review: "sprint",
+  api: "api",
+  coding: "api",
+  project: "project",
+  project_evaluation: "project",
+};
+
 router.post("/assessments", authMiddleware, async (req, res): Promise<void> => {
   const parsed = CreateAssessmentBody.safeParse(req.body);
   if (!parsed.success) {
@@ -109,6 +123,15 @@ router.post("/assessments", authMiddleware, async (req, res): Promise<void> => {
     }
   }
 
+  // Translate the API-level enum to the DB-level enum (see ASSESSMENT_TYPE_MAP above).
+  const dbType = ASSESSMENT_TYPE_MAP[type];
+  if (!dbType) {
+    res.status(400).json({
+      error: `Unsupported assessment type "${type}". Expected one of: ${Object.keys(ASSESSMENT_TYPE_MAP).join(", ")}.`,
+    });
+    return;
+  }
+
   // Look up all candidates in the batch so we can create one row per candidate.
   const batchCandidates = await db.select({ id: candidatesTable.id }).from(candidatesTable).where(eq(candidatesTable.batchId, batchId));
   if (batchCandidates.length === 0) {
@@ -121,31 +144,49 @@ router.post("/assessments", authMiddleware, async (req, res): Promise<void> => {
     : String(scheduledDate);
   const today = new Date().toISOString().split("T")[0];
 
+  // NB: `passed` is a GENERATED column in Postgres (Drizzle's schema
+  // exposes it as a regular boolean, but the live table has it computed
+  // from score/max_score). Sending any value — including null — triggers
+  // `cannot insert a non-DEFAULT value into column "passed"`. We omit it
+  // entirely and let the DB compute it.
   const values = batchCandidates.map(c => ({
     batchId,
     candidateId: c.id,
     title,
-    type,
+    type: dbType,
     scheduledDate: scheduledDateStr,
     maxScore: String(maxScore ?? 100),
     score: "0",
-    passed: null as boolean | null,
     uploadedDate: today,
     uploadedBy: req.userId ?? null,
   }));
-  const inserted = await db.insert(assessmentsTable).values(values).returning();
-  const [firstRow] = inserted;
 
-  await writeAudit({
-    actorId: req.userId,
-    action: "create",
-    entityType: "assessment",
-    entityId: firstRow.id,
-    details: { batchId, title, type, scheduledDate: scheduledDateStr, candidateCount: inserted.length },
-  });
+  // Wrap the INSERT + audit + enrichment so DB-level errors surface as
+  // a clean 400 with the Postgres detail instead of a raw 500. Common
+  // cases: FK violation (batchId / candidateId), enum/type cast errors,
+  // numeric out-of-range on max_score.
+  try {
+    const inserted = await db.insert(assessmentsTable).values(values).returning();
+    const [firstRow] = inserted;
+    if (!firstRow) {
+      res.status(500).json({ error: "Insert returned no rows" });
+      return;
+    }
 
-  // Return the deduplicated header (one assessment, not N rows).
-  res.status(201).json(await enrichAssessment(firstRow));
+    await writeAudit({
+      actorId: req.userId,
+      action: "create",
+      entityType: "assessment",
+      entityId: firstRow.id,
+      details: { batchId, title, type: dbType, scheduledDate: scheduledDateStr, candidateCount: inserted.length },
+    });
+
+    // Return the deduplicated header (one assessment, not N rows).
+    res.status(201).json(await enrichAssessment(firstRow));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(400).json({ error: `Could not create assessment: ${msg}` });
+  }
 });
 
 router.get("/assessments/:id", authMiddleware, async (req, res): Promise<void> => {
