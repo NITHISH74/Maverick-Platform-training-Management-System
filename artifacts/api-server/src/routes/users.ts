@@ -4,6 +4,7 @@ import { db, usersTable } from "@workspace/db";
 import { CreateUserBody, UpdateUserBody, GetUserParams, UpdateUserParams, DeleteUserParams, ListUsersQueryParams } from "@workspace/api-zod";
 import { authMiddleware, requireRole } from "../middlewares/auth";
 import { hashPassword } from "./auth";
+import { writeAudit } from "../lib/rbac";
 
 const router: IRouter = Router();
 
@@ -44,6 +45,13 @@ router.post("/users", authMiddleware, async (req, res): Promise<void> => {
   void _ignored; void hashPassword;
   const auth0Sub = `pending|${rest.email.toLowerCase()}`;
   const [user] = await db.insert(usersTable).values({ ...rest, auth0Sub }).returning();
+  await writeAudit({
+    actorId: req.userId,
+    action: "user_created",
+    entityType: "user",
+    entityId: user.id,
+    details: { after: { name: user.name, email: user.email, role: user.role }, role: req.userRole, ip: req.ip ?? null },
+  });
   res.status(201).json(serializeUser(user));
 });
 
@@ -74,11 +82,24 @@ router.patch("/users/:id", authMiddleware, requireRole("admin"), async (req, res
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  const [pre] = await db.select().from(usersTable).where(eq(usersTable.id, params.data.id));
   const [user] = await db.update(usersTable).set(parsed.data).where(eq(usersTable.id, params.data.id)).returning();
   if (!user) {
     res.status(404).json({ error: "User not found" });
     return;
   }
+  await writeAudit({
+    actorId: req.userId,
+    action: "user_updated",
+    entityType: "user",
+    entityId: user.id,
+    details: {
+      before: pre ? { name: pre.name, email: pre.email, role: pre.role, isActive: pre.isActive } : null,
+      after: { name: user.name, email: user.email, role: user.role, isActive: user.isActive },
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
   res.json(serializeUser(user));
 });
 
@@ -94,6 +115,17 @@ router.delete("/users/:id", authMiddleware, requireRole("admin"), async (req, re
     res.status(404).json({ error: "User not found" });
     return;
   }
+  await writeAudit({
+    actorId: req.userId,
+    action: "user_deleted",
+    entityType: "user",
+    entityId: user.id,
+    details: {
+      before: { name: user.name, email: user.email, role: user.role },
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
   res.sendStatus(204);
 });
 

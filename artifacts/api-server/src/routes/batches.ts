@@ -98,10 +98,10 @@ router.post("/batches", authMiddleware, requireRole("admin", "coordinator"), asy
   }
   await writeAudit({
     actorId: req.userId,
-    action: "create",
+    action: "batch_created",
     entityType: "batch",
     entityId: batch.id,
-    details: { name: batch.name, program: batch.program, trainerIds: trainerIds ?? [] },
+    details: { after: { name: batch.name, program: batch.program, trainerIds: trainerIds ?? [] }, role: req.userRole, ip: req.ip ?? null },
   });
   res.status(201).json(await enrichBatch(batch));
 });
@@ -144,6 +144,9 @@ router.patch("/batches/:id", authMiddleware, requireRole("admin", "coordinator")
   const updateData: Record<string, unknown> = { ...batchData };
   if (batchData.startDate instanceof Date) updateData.startDate = batchData.startDate.toISOString().split("T")[0];
   if (batchData.endDate instanceof Date) updateData.endDate = batchData.endDate.toISOString().split("T")[0];
+  // Snapshot pre-update state so the audit entry can record before→after.
+  const [pre] = await db.select().from(batchesTable)
+    .where(and(eq(batchesTable.id, params.data.id), isNull(batchesTable.deletedAt)));
   const [batch] = await db.update(batchesTable).set(updateData)
     .where(and(eq(batchesTable.id, params.data.id), isNull(batchesTable.deletedAt))).returning();
   if (!batch) {
@@ -155,6 +158,30 @@ router.patch("/batches/:id", authMiddleware, requireRole("admin", "coordinator")
     if (trainerIds.length > 0) {
       await db.insert(batchTrainersTable).values(trainerIds.map(tid => ({ batchId: batch.id, trainerId: tid })));
     }
+  }
+  // F2: every batch update writes an audit row. If the status changed we
+  // emit batch_status_changed in addition to the generic batch_updated so
+  // dashboards can filter status transitions specifically.
+  await writeAudit({
+    actorId: req.userId,
+    action: "batch_updated",
+    entityType: "batch",
+    entityId: batch.id,
+    details: {
+      before: pre ? { name: pre.name, status: pre.status, program: pre.program } : null,
+      after: { name: batch.name, status: batch.status, program: batch.program, trainerIds },
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
+  if (pre && pre.status !== batch.status) {
+    await writeAudit({
+      actorId: req.userId,
+      action: batch.status === "closed" ? "batch_closed" : "batch_status_changed",
+      entityType: "batch",
+      entityId: batch.id,
+      details: { before_status: pre.status, after_status: batch.status, role: req.userRole, ip: req.ip ?? null },
+    });
   }
   res.json(await enrichBatch(batch));
 });
@@ -189,7 +216,12 @@ router.delete("/batches/:id", authMiddleware, requireRole("admin"), async (req, 
     action: "batch_deleted",
     entityType: "batch",
     entityId: batch.id,
-    details: { name: batch.name, program: batch.program, soft_delete: true },
+    details: {
+      before: { name: batch.name, program: batch.program, status: batch.status },
+      soft_delete: true,
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
   });
   res.sendStatus(204);
 });

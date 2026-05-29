@@ -71,10 +71,10 @@ router.post("/candidates", authMiddleware, requireRole("admin", "coordinator"), 
   }).returning();
   await writeAudit({
     actorId: req.userId,
-    action: "create",
+    action: "candidate_created",
     entityType: "candidate",
     entityId: candidate.id,
-    details: { name: candidate.name, email: candidate.email, batchId: candidate.batchId },
+    details: { after: { name: candidate.name, email: candidate.email, batchId: candidate.batchId }, role: req.userRole, ip: req.ip ?? null },
   });
   res.status(201).json(await enrichCandidate(candidate));
 });
@@ -104,11 +104,25 @@ router.patch("/candidates/:id", authMiddleware, requireRole("admin", "coordinato
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  // Snapshot before so the audit row shows what actually changed.
+  const [pre] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, params.data.id));
   const [candidate] = await db.update(candidatesTable).set(parsed.data).where(eq(candidatesTable.id, params.data.id)).returning();
   if (!candidate) {
     res.status(404).json({ error: "Candidate not found" });
     return;
   }
+  await writeAudit({
+    actorId: req.userId,
+    action: "candidate_updated",
+    entityType: "candidate",
+    entityId: candidate.id,
+    details: {
+      before: pre ? { name: pre.name, email: pre.email, status: pre.status, batchId: pre.batchId } : null,
+      after: { name: candidate.name, email: candidate.email, status: candidate.status, batchId: candidate.batchId },
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
   res.json(await enrichCandidate(candidate));
 });
 
@@ -126,16 +140,20 @@ router.delete("/candidates/:id", authMiddleware, requireRole("admin", "coordinat
   // Audit the removal so it can be reviewed in the audit log UI.
   await writeAudit({
     actorId: req.userId,
-    action: "delete",
+    action: "candidate_deleted",
     entityType: "candidate",
     entityId: candidate.id,
     details: {
-      candidateId: candidate.candidateId,
-      name: candidate.name,
-      email: candidate.email,
-      batchId: candidate.batchId,
-      status: candidate.status,
+      before: {
+        candidateId: candidate.candidateId,
+        name: candidate.name,
+        email: candidate.email,
+        batchId: candidate.batchId,
+        status: candidate.status,
+      },
       reason: typeof req.body?.reason === "string" ? req.body.reason : undefined,
+      role: req.userRole,
+      ip: req.ip ?? null,
     },
   });
   res.sendStatus(204);
@@ -152,11 +170,25 @@ router.patch("/candidates/:id/status", authMiddleware, requireRole("admin", "coo
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  const [pre] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, params.data.id));
   const [candidate] = await db.update(candidatesTable).set({ status: parsed.data.status }).where(eq(candidatesTable.id, params.data.id)).returning();
   if (!candidate) {
     res.status(404).json({ error: "Candidate not found" });
     return;
   }
+  await writeAudit({
+    actorId: req.userId,
+    action: "candidate_status_changed",
+    entityType: "candidate",
+    entityId: candidate.id,
+    details: {
+      before_status: pre?.status,
+      after_status: candidate.status,
+      name: candidate.name,
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
   res.json(await enrichCandidate(candidate));
 });
 
@@ -222,6 +254,22 @@ router.post("/candidates/bulk-import", authMiddleware, requireRole("admin", "coo
     }
   }
 
+  // F2: every bulk import logs one audit row covering the whole batch
+  // upload — counts make it easy to spot accidental mass-inserts later.
+  await writeAudit({
+    actorId: req.userId,
+    action: "candidate_bulk_uploaded",
+    entityType: "batch",
+    entityId: batchId,
+    details: {
+      inserted,
+      duplicates: duplicates.length,
+      errors: errors.length,
+      attempted: candidates.length,
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
   // Back-compat: old client uses `failed` + `errors: string[]`. We keep both
   // shapes so the existing Candidates.tsx doesn't break while the new UI
   // reads `duplicates`.

@@ -6,7 +6,7 @@ import {
   ListAttendanceQueryParams, GetAttendanceSummaryQueryParams
 } from "@workspace/api-zod";
 import { authMiddleware } from "../middlewares/auth";
-import { getTrainerBatchIds } from "../lib/rbac";
+import { getTrainerBatchIds, writeAudit } from "../lib/rbac";
 import { createInAppNotification } from "../lib/notify";
 
 // Returns null when there is no trainer restriction; otherwise the list of
@@ -80,6 +80,17 @@ router.post("/attendance", authMiddleware, async (req, res): Promise<void> => {
     status: parsed.data.status,
     submittedById: req.userId ?? null,
   }).returning();
+  await writeAudit({
+    actorId: req.userId,
+    action: "attendance_submitted",
+    entityType: "attendance",
+    entityId: record.id,
+    details: {
+      after: { candidateId: record.candidateId, batchId: record.batchId, date: record.date, status: record.status },
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
   res.status(201).json(await enrichAttendance(record));
 });
 
@@ -156,6 +167,24 @@ router.post("/attendance/bulk", authMiddleware, async (req, res): Promise<void> 
   }
 
   const enriched = await Promise.all(inserted.map(enrichAttendance));
+  // F2: single audit row per bulk upload, with row counts. Individual
+  // attendance_submitted rows would flood the log on a 60-candidate upload.
+  if (inserted.length > 0) {
+    await writeAudit({
+      actorId: req.userId,
+      action: "attendance_bulk_uploaded",
+      entityType: "batch",
+      entityId: batchId,
+      details: {
+        date: dateStr,
+        inserted: inserted.length,
+        duplicates: duplicates.length,
+        attempted: records.length,
+        role: req.userRole,
+        ip: req.ip ?? null,
+      },
+    });
+  }
   res.status(201).json({
     inserted: enriched.length,
     records: enriched,
@@ -203,11 +232,24 @@ router.patch("/attendance/:id", authMiddleware, async (req, res): Promise<void> 
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  const [pre] = await db.select().from(attendanceTable).where(eq(attendanceTable.id, params.data.id));
   const [record] = await db.update(attendanceTable).set(parsed.data).where(eq(attendanceTable.id, params.data.id)).returning();
   if (!record) {
     res.status(404).json({ error: "Attendance record not found" });
     return;
   }
+  await writeAudit({
+    actorId: req.userId,
+    action: "attendance_updated",
+    entityType: "attendance",
+    entityId: record.id,
+    details: {
+      before: pre ? { status: pre.status, date: pre.date, candidateId: pre.candidateId } : null,
+      after: { status: record.status, date: record.date, candidateId: record.candidateId },
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
   res.json(await enrichAttendance(record));
 });
 
