@@ -175,10 +175,10 @@ router.post("/assessments", authMiddleware, async (req, res): Promise<void> => {
 
     await writeAudit({
       actorId: req.userId,
-      action: "create",
+      action: "assessment_created",
       entityType: "assessment",
       entityId: firstRow.id,
-      details: { batchId, title, type: dbType, scheduledDate: scheduledDateStr, candidateCount: inserted.length },
+      details: { after: { batchId, title, type: dbType, scheduledDate: scheduledDateStr, candidateCount: inserted.length }, role: req.userRole, ip: req.ip ?? null },
     });
 
     // Return the deduplicated header (one assessment, not N rows).
@@ -244,6 +244,18 @@ router.patch("/assessments/:id", authMiddleware, async (req, res): Promise<void>
     eq(assessmentsTable.scheduledDate, existing.scheduledDate),
   ));
   const [refreshed] = await db.select().from(assessmentsTable).where(eq(assessmentsTable.id, params.data.id));
+  await writeAudit({
+    actorId: req.userId,
+    action: "assessment_updated",
+    entityType: "assessment",
+    entityId: refreshed?.id ?? existing.id,
+    details: {
+      before: { title: existing.title, type: existing.type, scheduledDate: existing.scheduledDate, maxScore: existing.maxScore },
+      after: refreshed ? { title: refreshed.title, type: refreshed.type, scheduledDate: refreshed.scheduledDate, maxScore: refreshed.maxScore } : null,
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
   res.json(await enrichAssessment(refreshed));
 });
 
@@ -276,15 +288,19 @@ router.delete("/assessments/:id", authMiddleware, async (req, res): Promise<void
 
   await writeAudit({
     actorId: req.userId,
-    action: "delete",
+    action: "assessment_deleted",
     entityType: "assessment",
     entityId: existing.id,
     details: {
-      batchId: existing.batchId,
-      title: existing.title,
-      type: existing.type,
-      scheduledDate: existing.scheduledDate,
+      before: {
+        batchId: existing.batchId,
+        title: existing.title,
+        type: existing.type,
+        scheduledDate: existing.scheduledDate,
+      },
       rowsDeleted: deleted.length,
+      role: req.userRole,
+      ip: req.ip ?? null,
     },
   });
 
