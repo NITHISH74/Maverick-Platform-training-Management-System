@@ -89,11 +89,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         <nav className={cn("space-y-1", collapsed ? "px-2" : "px-3")}>
           {filteredItems.map((item) => {
             const isActive = item.href ? location.startsWith(item.href) : false;
+            // F5 spec: active nav item gets a stronger visual indicator —
+            // a left-border accent plus a background tint. Borders are drawn
+            // as a transparent 2-px left border on every item so the active
+            // state doesn't cause horizontal jitter when switching pages.
             const className = cn(
-              "flex items-center rounded-md text-sm font-medium transition-colors w-full",
+              "flex items-center rounded-md text-sm font-medium transition-colors w-full border-l-2 border-transparent",
               collapsed ? "justify-center px-0 py-2" : "gap-3 px-3 py-2",
               isActive
-                ? "bg-sidebar-accent text-sidebar-accent-foreground"
+                ? "bg-sidebar-accent/80 text-sidebar-accent-foreground border-l-primary"
                 : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
             );
             const inner = (

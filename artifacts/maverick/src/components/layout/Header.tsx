@@ -32,12 +32,17 @@ export function Header() {
           <Sparkles className="h-4 w-4 mr-2 text-primary" />
           Copilot
         </Button>
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <User className="h-4 w-4" />
-          <span>{user?.name}</span>
-          <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary capitalize">
-            {user?.role}
-          </span>
+        {/* Name + role stacked per F5 spec ("add role label below the user's
+            name"). Keeps the existing pill style as the role indicator but
+            moves it below the name on a second line for clearer hierarchy. */}
+        <div className="flex items-center gap-2">
+          <User className="h-4 w-4 text-muted-foreground" />
+          <div className="flex flex-col leading-tight">
+            <span className="text-sm font-medium text-foreground">{user?.name}</span>
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground capitalize">
+              {user?.role}
+            </span>
+          </div>
         </div>
         <Button variant="ghost" size="sm" onClick={handleLogout} className="text-muted-foreground hover:text-foreground">
           <LogOut className="h-4 w-4 mr-2" />

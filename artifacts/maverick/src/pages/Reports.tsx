@@ -18,6 +18,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { AlertTriangle, Download, FileText, Trophy, Users, CalendarCheck, FileDown, Loader2 } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { EmptyState } from "@/components/ui/empty-state";
+import { TableSkeletonRows } from "@/components/ui/table-skeleton";
 
 function downloadCSV(filename: string, rows: string[][]) {
   const csv = rows.map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -276,9 +279,8 @@ export default function Reports() {
                             <TableCell className="font-medium">{r.candidateName}</TableCell>
                             <TableCell>{r.batchName}</TableCell>
                             <TableCell>
-                              <Badge variant={(statusColors[r.status] as "default" | "destructive" | "secondary" | "outline") ?? "outline"}>
-                                {r.status}
-                              </Badge>
+                              {/* F5: standardised StatusBadge — replaces the ad-hoc statusColors map. */}
+                              <StatusBadge status={r.status} />
                             </TableCell>
                             <TableCell className="text-right">{r.attendancePct}%</TableCell>
                             <TableCell className="text-right">{r.avgScore}%</TableCell>
@@ -289,7 +291,11 @@ export default function Reports() {
                     </Table>
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground text-center py-8">No data available.</p>
+                  <EmptyState
+                    icon={Users}
+                    title="No consolidated data yet"
+                    description="Once candidates are added and assessed, their consolidated rollup appears here."
+                  />
                 )}
               </CardContent>
             </Card>
@@ -345,15 +351,8 @@ export default function Reports() {
                             <TableCell>{r.batchName}</TableCell>
                             <TableCell className="font-mono text-xs">{r.date}</TableCell>
                             <TableCell>
-                              <Badge
-                                variant={
-                                  r.status === "present" ? "default"
-                                  : r.status === "absent" ? "destructive"
-                                  : "secondary"
-                                }
-                              >
-                                {r.status}
-                              </Badge>
+                              {/* F5: standardised StatusBadge handles present/absent/leave palette. */}
+                              <StatusBadge status={r.status} />
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground">{r.remarks ?? "—"}</TableCell>
                           </TableRow>
@@ -362,7 +361,11 @@ export default function Reports() {
                     </Table>
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground text-center py-8">No attendance data available.</p>
+                  <EmptyState
+                    icon={CalendarCheck}
+                    title="No attendance recorded yet"
+                    description="Attendance rows appear after trainers mark candidates present, absent, or on leave."
+                  />
                 )}
               </CardContent>
             </Card>
@@ -435,7 +438,11 @@ export default function Reports() {
                     </Table>
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground text-center py-8">No assessment data available.</p>
+                  <EmptyState
+                    icon={FileText}
+                    title="No assessment scores yet"
+                    description="Once trainers record sprint, API, or project scores, they show up here."
+                  />
                 )}
               </CardContent>
             </Card>
@@ -504,9 +511,12 @@ export default function Reports() {
                     </Table>
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground text-center py-8">
-                    No topper data. Run the Toppers computation first.
-                  </p>
+                  <EmptyState
+                    icon={Trophy}
+                    title="No topper data yet"
+                    description="Run the Toppers computation on a batch to see the leaderboard."
+                    action={{ label: "Open Toppers", href: "/toppers" }}
+                  />
                 )}
               </CardContent>
             </Card>
