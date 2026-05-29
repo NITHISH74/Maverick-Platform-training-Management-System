@@ -11,7 +11,7 @@ if settings.SENTRY_DSN:
 # Note: `chatbot` was merged into `copilot` (see app/routers/copilot.py).
 # Its RAG helper was ported over; the legacy file is kept on disk for
 # reference but no longer registered.
-from app.routers import feedback, notifications, agent, copilot, trainer_scoring, feedback_intelligence  # noqa: E402
+from app.routers import feedback, notifications, agent, copilot, trainer_scoring, feedback_intelligence, reports_pdf  # noqa: E402
 
 app = FastAPI(title="Maverick AI Service", version="1.0")
 
@@ -64,6 +64,15 @@ app.include_router(
     feedback_intelligence.router,
     prefix="/feedback-intelligence",
     tags=["feedback-intelligence"],
+    dependencies=[Depends(verify_internal)],
+)
+# AI PDF reports — POST /reports/pdf. The Node side fetches rows from
+# Postgres (exact same query path as the CSV endpoints), forwards them here,
+# and we narrate + render. Keeps this service stateless w.r.t. the DB.
+app.include_router(
+    reports_pdf.router,
+    prefix="/reports",
+    tags=["reports-pdf"],
     dependencies=[Depends(verify_internal)],
 )
 
