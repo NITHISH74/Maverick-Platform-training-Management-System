@@ -4,6 +4,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
@@ -240,12 +241,10 @@ function BatchGrid({
               <CardTitle className="text-lg">{batch.name}</CardTitle>
               <p className="text-sm text-muted-foreground font-mono">{batch.batchCode}</p>
             </div>
-            <Badge
-              variant={batch.status === "running" ? "default" : "secondary"}
-              className={batch.status === "closed" ? "bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200" : ""}
-            >
-              {batch.status}
-            </Badge>
+            {/* F5: standardised StatusBadge — same palette across every
+                page (Reports, BatchDetail, Candidates, etc.) so trainers
+                don't see "running" looking different in three places. */}
+            <StatusBadge status={batch.status} />
           </CardHeader>
           <CardContent className="flex-1 flex flex-col justify-between">
             <div className="space-y-3 mb-6 mt-2">
