@@ -2,7 +2,8 @@ import { Router, type IRouter } from "express";
 import { eq } from "drizzle-orm";
 import { db, topperConfigTable, topperResultsTable, batchesTable, candidatesTable, assessmentsTable, attendanceTable } from "@workspace/db";
 import { ComputeToppersBody, UpdateTopperConfigBody, ListToppersQueryParams } from "@workspace/api-zod";
-import { authMiddleware } from "../middlewares/auth";
+import { authMiddleware, requireRole } from "../middlewares/auth";
+import { writeAudit } from "../lib/rbac";
 
 const router: IRouter = Router();
 
@@ -118,37 +119,66 @@ router.get("/topper-config", authMiddleware, async (_req, res): Promise<void> =>
   });
 });
 
-router.patch("/topper-config", authMiddleware, async (req, res): Promise<void> => {
-  const parsed = UpdateTopperConfigBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-  let [config] = await db.select().from(topperConfigTable);
-  if (!config) {
-    [config] = await db.insert(topperConfigTable).values({}).returning();
-  }
-  const updateData: Record<string, string> = {};
-  // Legacy clients send a single assessmentWeight; split it 50/50 across
-  // sprint + api so the new weights still sum correctly.
-  if (parsed.data.assessmentWeight !== undefined) {
-    const half = parsed.data.assessmentWeight / 2;
-    updateData.sprintWeight = String(half);
-    updateData.apiWeight = String(half);
-  }
-  if (parsed.data.projectWeight !== undefined) updateData.projectWeight = String(parsed.data.projectWeight);
-  if (parsed.data.attendanceWeight !== undefined) updateData.attendanceWeight = String(parsed.data.attendanceWeight);
-  const [updated] = await db.update(topperConfigTable).set(updateData).where(eq(topperConfigTable.id, config.id)).returning();
-  const assessmentWeight = Number(updated.sprintWeight ?? 0) + Number(updated.apiWeight ?? 0);
-  res.json({
-    id: updated.id,
-    assessmentWeight,
-    sprintWeight: Number(updated.sprintWeight ?? 0),
-    apiWeight: Number(updated.apiWeight ?? 0),
-    projectWeight: Number(updated.projectWeight),
-    attendanceWeight: Number(updated.attendanceWeight),
-    updatedAt: updated.updatedAt,
-  });
-});
+// Trainer role is explicitly excluded — topper weightage is a platform-wide
+// policy decision owned by admins and coordinators. Trainers get a 403 here
+// even though their UI hides the Save button; defence in depth against
+// hand-crafted requests.
+router.patch(
+  "/topper-config",
+  authMiddleware,
+  requireRole("admin", "coordinator"),
+  async (req, res): Promise<void> => {
+    const parsed = UpdateTopperConfigBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: parsed.error.message });
+      return;
+    }
+    let [config] = await db.select().from(topperConfigTable);
+    if (!config) {
+      [config] = await db.insert(topperConfigTable).values({}).returning();
+    }
+    // Snapshot the pre-update weights so the audit row can record from→to.
+    const before = {
+      sprintWeight: Number(config.sprintWeight ?? 0),
+      apiWeight: Number(config.apiWeight ?? 0),
+      projectWeight: Number(config.projectWeight),
+      attendanceWeight: Number(config.attendanceWeight),
+    };
+    const updateData: Record<string, string> = {};
+    // Legacy clients send a single assessmentWeight; split it 50/50 across
+    // sprint + api so the new weights still sum correctly.
+    if (parsed.data.assessmentWeight !== undefined) {
+      const half = parsed.data.assessmentWeight / 2;
+      updateData.sprintWeight = String(half);
+      updateData.apiWeight = String(half);
+    }
+    if (parsed.data.projectWeight !== undefined) updateData.projectWeight = String(parsed.data.projectWeight);
+    if (parsed.data.attendanceWeight !== undefined) updateData.attendanceWeight = String(parsed.data.attendanceWeight);
+    const [updated] = await db.update(topperConfigTable).set(updateData).where(eq(topperConfigTable.id, config.id)).returning();
+    const assessmentWeight = Number(updated.sprintWeight ?? 0) + Number(updated.apiWeight ?? 0);
+    const after = {
+      sprintWeight: Number(updated.sprintWeight ?? 0),
+      apiWeight: Number(updated.apiWeight ?? 0),
+      projectWeight: Number(updated.projectWeight),
+      attendanceWeight: Number(updated.attendanceWeight),
+    };
+    await writeAudit({
+      actorId: req.userId,
+      action: "weightage_updated",
+      entityType: "topper_config",
+      entityId: updated.id,
+      details: { before, after, role: req.userRole },
+    });
+    res.json({
+      id: updated.id,
+      assessmentWeight,
+      sprintWeight: Number(updated.sprintWeight ?? 0),
+      apiWeight: Number(updated.apiWeight ?? 0),
+      projectWeight: Number(updated.projectWeight),
+      attendanceWeight: Number(updated.attendanceWeight),
+      updatedAt: updated.updatedAt,
+    });
+  },
+);
 
 export default router;
