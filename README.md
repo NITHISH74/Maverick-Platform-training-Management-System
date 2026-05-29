@@ -1,18 +1,34 @@
 # Maverick Execution Platform
 
-Enterprise **Training Management System (TMS)** for running training programmes end to end: batches, candidates, trainers, attendance, assessments, toppers (leaderboards), feedback, notifications, reports, and audit logs. Role-based access supports **Admin**, **Coordinator**, and **Trainer** workflows.
+Enterprise **Training Management System (TMS)** for running training programmes end to end: batches, candidates, trainers, attendance, assessments, toppers (leaderboards), feedback, notifications, AI-narrated PDF reports, in-app walkthroughs, and audit logs. Role-based access supports **Admin**, **Coordinator**, and **Trainer** workflows.
+
+---
+
+## ⚡ Run it in three commands
+
+Maverick runs as **three independent services**, one per terminal. **No local database install is required — the platform uses hosted Supabase Postgres.** You only need Node, pnpm, and Python.
+
+| # | Layer | Port | Command (run from repo root, in its own terminal) |
+|---|---|---|---|
+| 1 | **Node API** | 8080 | `pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/api-server run start` |
+| 2 | **React Frontend** (Vite) | 5173 | `pnpm --filter @workspace/maverick run dev` |
+| 3 | **Python AI Service** (FastAPI) | 9000 | `python -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --app-dir services/ai` |
+
+Open **http://localhost:5173** once all three are up. Detailed setup, env vars, and per-OS instructions live in [Run locally](#run-locally-windows--macos--linux).
+
+> 💡 **Important — before the first run** you must populate three `.env` files (root, `services/ai/`, `artifacts/maverick/`) and `pnpm install`. See [Configuration and secrets](#configuration-and-secrets).
 
 ---
 
 ## Table of contents
 
-- [Architecture](#architecture)
+- [Architecture (three layers)](#architecture-three-layers)
 - [Application flow](#application-flow)
-- [Autonomous Batch Monitoring Agent](#autonomous-batch-monitoring-agent)
 - [Key features](#key-features)
+- [Autonomous Batch Monitoring Agent](#autonomous-batch-monitoring-agent)
+- [Coordinator Copilot](#coordinator-copilot)
 - [Techniques used](#techniques-used)
 - [Tech stack](#tech-stack)
-- [Coordinator Copilot](#coordinator-copilot)
 - [Prerequisites](#prerequisites)
 - [Download and install](#download-and-install)
 - [Configuration and secrets](#configuration-and-secrets)
@@ -25,9 +41,26 @@ Enterprise **Training Management System (TMS)** for running training programmes 
 
 ---
 
-## Architecture
+## Architecture (three layers)
 
-Monorepo (**pnpm workspaces**). The **OpenAPI spec** is the contract; **Orval** generates Zod schemas and React Query hooks. The **Express API** talks to **PostgreSQL** via **Drizzle ORM**. The **React (Vite)** app calls `/api` through the Vite dev proxy in development or your reverse proxy in production.
+Maverick is intentionally split into **three independent runtime layers**, each in its own process. This separation makes RBAC, AI calls, and the UI deployable and scalable independently.
+
+| # | Layer | Package | Port | What it owns |
+|---|---|---|---|---|
+| **1** | **Frontend** (React + Vite) | `artifacts/maverick` | **5173** | UI, role-aware navigation, Coordinator Copilot panel, walkthrough modal, calls `/api/*` |
+| **2** | **Node API** (Express 5) | `artifacts/api-server` | **8080** | REST endpoints, auth, RBAC enforcement, audit log writes, proxies `/api/copilot` and `/api/ai/*` to Layer 3 |
+| **3** | **Python AI Service** (FastAPI) | `services/ai` | **9000** | Azure OpenAI GPT-4.1 — Coordinator Copilot SQL+narration, AI PDF report generation, Feedback Intelligence, Trainer Scoring, Monitoring agent |
+
+**Data:** all three layers talk to the **same hosted Supabase Postgres** via `DATABASE_URL`. There is no second database, no local Postgres install, no shared file storage.
+
+**Important points about the three-layer split:**
+
+- The **Frontend never talks to the AI service directly.** All AI traffic goes through the Node API, which adds the `x-internal-token` header — Azure OpenAI keys never reach the browser.
+- The **Node API is the only layer that enforces user identity.** It verifies the Auth0-exchanged Base64 token, attaches `userId` + `userRole` to the request, then forwards to the AI service. Layer 3 trusts what Layer 2 tells it (defense-in-depth via shared internal secret).
+- The **AI service is stateless w.r.t. user identity.** It re-reads role + batch scope from the DB using the `user_id` Node passes in. This lets Layer 3 be safely cached / scaled horizontally.
+- **OpenAPI is the single source of truth** — `lib/api-spec/openapi.yaml` generates both the Zod schemas the Node API validates against and the TanStack Query hooks the React app calls.
+
+Monorepo: **pnpm workspaces** (npm/yarn blocked). **Drizzle ORM** for typed DB access. **Orval** for codegen.
 
 ```mermaid
 flowchart TB
@@ -53,8 +86,8 @@ flowchart TB
   DB["db + Drizzle schema"]
   end
 
-  subgraph Data["Data layer"]
-  PG[("PostgreSQL 16")]
+  subgraph Data["Data layer (hosted)"]
+  PG[("Supabase Postgres 16<br/>shared by all layers")]
   end
 
   UI -->|"fetch /api/*<br/>Bearer token"| P
@@ -77,7 +110,7 @@ flowchart TB
 | API | `artifacts/api-server` | Express 5 routes, auth middleware, enrichment |
 | Contract | `lib/api-spec/openapi.yaml` | Single source of truth for REST API |
 | Codegen | `lib/api-zod`, `lib/api-client-react` | Do not edit `generated/` files |
-| Database | `lib/db` | Drizzle schema, migrations via `drizzle-kit push` |
+| Database | `lib/db` | Drizzle schema + SQL migrations applied directly to Supabase (no local Postgres) |
 
 ---
 
@@ -138,24 +171,48 @@ flowchart LR
 
 ## Key features
 
-- **Autonomous Batch Monitoring Agent** — rule-driven background agent that scans every running batch on a schedule (or on demand), evaluates 8 health rules, creates `monitoring_alerts`, and fans out plain-text emails to trainer + coordinator (admin sees the dashboard, not the emails). Idempotent per `(batch, candidate, kind, day)`. Per-role scope on the dashboard. Console transport for dev, nodemailer for prod. See [Autonomous Batch Monitoring Agent](#autonomous-batch-monitoring-agent).
-- **Coordinator Copilot** — single conversational AI surface (slide-over from the header or full-screen at `/copilot`) that turns plain-English questions into safe `SELECT` queries against Supabase via Azure OpenAI GPT-4.1. Uses **live schema introspection** so the prompt can't drift from the DB, **RAG context** from `match_rag`, **per-caller batch-scope** enforcement (admin / coordinator / trainer), **SSE token streaming**, **table / number / bar** result rendering, **CSV export**, **Show-SQL toggle**, 👍/👎 feedback, and per-session tokens + INR cost tracking. Replaces the legacy AI Chatbot page. See [Coordinator Copilot](#coordinator-copilot).
-- **Role-based dashboards** — Admin, Coordinator, Trainer views with KPIs, attendance trends, pipeline funnel, recent activity.
-- **Batch lifecycle management** — create, assign trainers, status transitions (`planned → active → completed`).
-- **Candidate pipeline** — profile management with status flow (`active → discontinued / cleared / offered / onboarded`).
-- **Attendance** — daily roster marking, bulk CSV upload, CSV export.
-- **Assessments** — sprint reviews, coding rounds, API tests, project evaluations, all weighted.
-- **Toppers leaderboard** — Weighted Composite Score (WCS) ranking across assessment categories.
-- **Feedback & sentiment** — collect candidate feedback, AI-powered sentiment analysis (Azure OpenAI GPT-4.1).
-- **AI chatbot (RAG)** — natural-language Q&A over training data using SQL generation + text embeddings.
-- **AI notification copywriting** — auto-drafted notification messages via GPT-4.1.
+### Core training operations
+
+- **Role-based dashboards** — Admin, Coordinator, and Trainer get distinct views: KPIs (total candidates, running batches, attendance %, cleared / offered / onboarded / dropped), attendance trends, candidate pipeline funnel, recent activity feed, and Monitoring agent risk summary.
+- **Batch lifecycle management** — create batches, assign trainers, soft-delete (`deleted_at`), status transitions (`planned → running → completed → closed`). Status changes emit dedicated `batch_status_changed` / `batch_closed` audit rows.
+- **Candidate pipeline** — profile management with status flow (`active → discontinued / cleared / offered / onboarded`). Bulk Excel import with row-by-row duplicate reporting.
+- **Attendance** — daily roster marking (present / absent / leave), bulk Excel upload with duplicate detection, per-batch cutoff time for late-marking, candidate-level attendance % rollups, alerts for ≥3 consecutive absences.
+- **Assessments** — sprint reviews, coding rounds, API tests, project evaluations, all weighted. Trainers can only edit assessments they created (server-enforced).
+- **Toppers leaderboard** — Weighted Composite Score (WCS) ranking across Sprint, API/Coding, Project, and Attendance components. Weight sliders sum to 100 % and are admin/coordinator-only (trainers see a disabled read-only view).
+- **Feedback collection** — coordinator triggers an MS Forms feedback request; responses are ingested and surfaced per batch.
+- **Notifications centre** — per-user in-app alerts with read/unread state and a notification log table.
+- **Users & RBAC** — Admin, Coordinator, Trainer; gated routes, gated APIs, server-enforced 403s, and trainer batch-scope on every read path.
+
+### AI features (Azure OpenAI GPT-4.1)
+
+- **Coordinator Copilot** — single conversational AI surface (slide-over from the header) that turns plain-English questions into safe `SELECT` queries via GPT-4.1. **Live schema introspection** so the prompt can't drift from the DB, **RAG context** from `match_rag`, **per-caller batch-scope enforcement** (admin unrestricted; coordinator → managed batches; trainer → batches via `batch_trainers`), **anti-prompt-injection clause** in the system prompt, **SSE token streaming**, table / number / bar result rendering, CSV export, 👍/👎 feedback, and per-session token + INR cost tracking. See [Coordinator Copilot](#coordinator-copilot).
+- **AI-narrated PDF reports** — every report (Attendance, Assessment, Topper, Consolidated) exports to a multi-page PDF with a cover header, page numbers, GPT-4.1-written **executive summary + key insights + risks + recommendations**, and the full data table as an appendix. AI only sees the deterministic metrics dict (never raw rows), so it cannot invent data; failure falls back to a deterministic narrative and still ships the PDF. Triggered via `?format=pdf` on the existing report endpoints — CSV/Excel paths untouched.
+- **Autonomous Batch Monitoring Agent** — rule-driven background agent that scans every running batch on a schedule (or on demand), evaluates 8 health rules, creates `monitoring_alerts`, and fans out plain-text emails to trainer + coordinator (admin sees the dashboard, not the emails by default). Idempotent per `(batch, candidate, kind, day)`. See [Autonomous Batch Monitoring Agent](#autonomous-batch-monitoring-agent).
+- **Feedback Intelligence Engine** — GPT-4.1 extracts themes, overall sentiment, sentiment score, and prioritised recommended actions from a batch's feedback. Persists to `feedback_intelligence` (one row per batch).
+- **AI Trainer Scoring Engine** — GPT-4.1 scores a trainer's effectiveness on a per-batch basis from attendance %, assessment pass rate, and feedback samples. Renders as a donut + sub-score bars + reasoning + strengths/improvements.
+- **Trainer Intelligence Graph** — 3-tier SVG network at `/trainers/:id` (trainer → batches → candidates) with hover tooltips, click-to-highlight, and 4 KPI tiles.
+- **AI notification copywriting** — auto-drafted notification message text via GPT-4.1.
 - **CrewAI agents** — multi-agent workflows for higher-level training operations.
-- **Notifications center** — per-user alerts with read/unread state.
-- **Users & RBAC** — Admin, Coordinator, Trainer roles, gated routes and APIs.
-- **Audit log** — system-wide action timeline.
-- **Reports** — admin/coordinator reporting surfaces.
-- **Auth0 sign-in** with stateless Base64 API tokens (exchanged at `/api/auth/exchange`).
-- **OpenAPI-first** contract → generated Zod schemas + TanStack Query React hooks (Orval).
+
+### Security, audit, and governance
+
+- **Hardened RBAC for the Copilot** — word-boundary `batch_id` extraction (the old substring check would let `allowed=[1]` permit `batch_id=12`), `batches` table treated as scoped so `SELECT * FROM batches` cannot leak the full batch list, explicit *"You do not have access to this batch."* response on scope denial, and a `copilot.query.denied` audit row with `role` + `denied_batches` + `allowed_batches`.
+- **Topper weightage lock for trainers** — `PATCH /api/topper-config` returns 403 for trainers; Settings page disables sliders, hides the Save button, and shows a read-only notice. Every weightage change writes a `weightage_updated` audit row with full before→after snapshot.
+- **Comprehensive audit log coverage** — every write logs `{ action, entity_type, entity_id, actor_id, role, before, after, ip }` via a single `writeAudit` helper. Covered events: `batch_created/updated/deleted/closed/status_changed`, `candidate_created/updated/deleted/status_changed/bulk_uploaded`, `attendance_submitted/updated/bulk_uploaded`, `assessment_created/updated/deleted`, `feedback_request_sent`, `weightage_updated`, `clearance_rate_updated`, `report_downloaded`, `user_created/updated/deleted`, `copilot.query/help/denied/rejected/timeout/narrate`.
+- **Audit log UI with filters + pagination** — `/audit` page with action-type / performed-by / date-range filters, 50 rows per page, sticky header, hover rows, clickable entity IDs that jump to the affected record.
+
+### UI / UX
+
+- **Role-specific in-app walkthrough** — the `?` help icon in the top nav opens a full-screen modal with a left-sidebar TOC + step-by-step main area + Previous / Next / Got it footer. Admins see Admin + Coordinator + Trainer sections; coordinators and trainers see only their own. Auto-opens on first login (tracked via `walkthrough_seen` in localStorage); the help button reopens it any time.
+- **Standardised status badges** — one `StatusBadge` component with a fixed palette: green for running/cleared/offered/present, blue for planned/active, gray for completed, dark gray for closed, red for not_cleared/absent/discontinued, amber for leave. Same status string looks identical across every page.
+- **Reusable empty states & skeleton loaders** — `EmptyState` (icon + title + description + optional CTA) and `TableSkeletonRows` / `ContentSkeleton` shared across pages. No raw "Loading…" text in the rewritten surfaces.
+- **Polished navigation** — Sidebar active item gets a left-border accent + background tint; Header shows the user's name with the role label stacked beneath it.
+
+### Platform infrastructure
+
+- **Auth0 sign-in** with stateless **Base64 JSON** API tokens (exchanged at `/api/auth/exchange` — not JWT, intentionally — and stored in `localStorage` as `maverick_token`).
+- **OpenAPI-first contract** — `lib/api-spec/openapi.yaml` generates the Zod schemas the Node API validates against (`@workspace/api-zod`) **and** the TanStack Query React hooks (`@workspace/api-client-react`).
+- **Hosted Supabase Postgres** — single shared database. Migrations under `lib/db/migrations/*.sql` are applied with `python scripts/apply_*.py` helpers; there is no local Postgres install.
 
 ---
 
@@ -200,13 +257,16 @@ flowchart LR
 
 ## Prerequisites
 
+> 🚫 **You do NOT need to install PostgreSQL locally.** Maverick uses a **hosted Supabase Postgres** instance — the only thing you need is the connection string in `DATABASE_URL`. There is no local DB to set up, seed, or run alongside the app.
+
 | Requirement | Version / notes |
 |-------------|-----------------|
 | **Node.js** | 20+ locally; 24 LTS in production |
-| **pnpm** | 9+ — install globally: `npm install -g pnpm` |
-| **Python** | **3.12** (only needed if you want to run the AI service locally) |
-| **PostgreSQL** | 15+ locally, or hosted (Neon, Supabase, Railway) |
+| **pnpm** | 9+ — install globally: `npm install -g pnpm` (npm / yarn are blocked at the repo root) |
+| **Python** | **3.12** for the AI service (Layer 3). Required because Coordinator Copilot, AI PDF reports, and Feedback Intelligence run through it. |
+| **Supabase project** | Free tier is fine. Grab the connection string from Project → Settings → Database. |
 | **Azure OpenAI** | A deployment of **GPT-4.1** (and optionally a text-embedding deployment) for the AI service |
+| **Auth0 tenant** | SPA application (free tier is fine) for sign-in |
 | **Git** | To clone the repository |
 
 ---
@@ -234,33 +294,48 @@ pnpm install
 
 See [Configuration and secrets](#configuration-and-secrets). At minimum you need **`DATABASE_URL`**.
 
-### 4. Apply the database schema
+### 4. Apply database migrations to Supabase (first time only)
+
+The schema migrations live as plain SQL files under `lib/db/migrations/`. Apply them against your **Supabase** database via the bundled helper scripts (each is idempotent — re-running is safe):
 
 ```bash
-pnpm --filter @workspace/db run push
+python scripts/apply_copilot_migration.py
+python scripts/apply_monitoring_migration.py
+python scripts/apply_trainer_scores_migration.py
+python scripts/apply_feedback_intelligence_migration.py
+python scripts/apply_dashboard_kpis_migration.py
 ```
+
+> Alternative: paste the SQL files into the Supabase SQL editor in numeric order (`0001_*.sql` → `0007_*.sql`).
 
 ### 5. Start the application
 
-You need **three processes** to run the full platform locally: the **Node API** (port 8080), the **Vite frontend** (port 5173) and the **Python AI service** (port 9000). The AI service is only required for the chatbot, feedback analysis, notification copy, and CrewAI agent endpoints — the rest of the UI works without it. See [Run locally](#run-locally-windows--macos--linux).
+You need **three processes** to run the full platform locally — see the [⚡ Run it in three commands](#-run-it-in-three-commands) table at the top, or [Run locally](#run-locally-windows--macos--linux) for per-OS details.
+
+> The AI service (Layer 3) is required for Coordinator Copilot, AI PDF reports, Feedback Intelligence, Trainer Scoring, and Monitoring AI summaries. The rest of the UI works without it but those features show fallbacks.
 
 ---
 
 ## Configuration and secrets
 
-The Node API needs `DATABASE_URL`, the frontend needs Auth0 credentials, and the Python AI service needs **Azure OpenAI** credentials. Everything else is optional.
+The Node API needs the **Supabase `DATABASE_URL`** + the shared internal token, the frontend needs Auth0 credentials, and the Python AI service needs **Azure OpenAI** + Supabase credentials. Everything else is optional.
+
+> 🔐 **All three layers connect to the same hosted Supabase Postgres.** `DATABASE_URL` looks like `postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?pgbouncer=true` — copy it from Supabase → Project Settings → Database → Connection string. **Do not** install a local Postgres.
 
 ### What to configure
 
-**Root `.env` (Node API + db)**
+**Root `.env` (Node API + db + scripts)**
 
 | Variable | Required | Used by | Description |
 |----------|----------|---------|-------------|
-| **`DATABASE_URL`** | **Yes** | `lib/db`, Drizzle | PostgreSQL connection string |
-| **`PORT`** | **Yes** | API server & Vite | Listen port (see [ports table](#default-ports-and-routing)) |
-| **`BASE_PATH`** | **Yes** (frontend) | Maverick Vite app | URL base path (usually `/`) |
-| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` | Optional | Server-side admin ops | Used when the Node side talks to Supabase APIs |
-| `NODE_ENV` | Optional | API, Vite | `development` or `production` |
+| **`DATABASE_URL`** | **Yes** | `lib/db`, Drizzle, migration scripts | **Supabase Postgres** connection string |
+| **`PORT`** | **Yes** | API server | API listen port (default `8080`) |
+| **`INTERNAL_SHARED_SECRET`** (alias **`AI_INTERNAL_TOKEN`**) | **Yes** | Node ↔ AI service | Shared header `x-internal-token`. Must match the value in `services/ai/.env`. |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` / `SUPABASE_ANON_KEY` | Optional | Server-side admin ops | Used when Node calls Supabase REST APIs directly |
+| `AI_SERVICE_URL` | Optional | Node Copilot/AI proxies | Defaults to `http://localhost:9000` |
+| `ENABLE_MONITORING_SCHEDULER` | Optional | Monitoring agent | Set `true` to boot the cron loop at startup |
+| `SMTP_*` | Optional | Monitoring agent email fan-out | If unset, emails go to the console transport |
+| `NODE_ENV` | Optional | API | `development` or `production` |
 | `LOG_LEVEL` | Optional | API logger | Default `info` |
 
 **`artifacts/maverick/.env` (frontend / Auth0)**
@@ -290,56 +365,84 @@ The Node API needs `DATABASE_URL`, the frontend needs Auth0 credentials, and the
 
 #### Local development
 
-Create a **`.env` file in the repository root** (same folder as `package.json`):
+Create **three `.env` files** (none committed to git). Use a real Supabase connection string — there is no local Postgres to run against.
+
+**1. Root `.env` (Node API + migration scripts)** — same folder as `package.json`:
 
 ```env
-# Required — PostgreSQL
-DATABASE_URL=postgres://user:password@localhost:5432/maverick
+# Hosted Supabase Postgres — copy from Supabase → Settings → Database
+DATABASE_URL=postgresql://postgres.<project-ref>:<password>@aws-0-<region>.pooler.supabase.com:6543/postgres?pgbouncer=true
 
-# API server (terminal 1)
+# Supabase REST/admin keys (Settings → API)
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_SERVICE_KEY=<service-role-key>
+SUPABASE_ANON_KEY=<anon-key>
+
+# API server
 PORT=8080
 NODE_ENV=development
 
-# Frontend (terminal 2) — use a different PORT than the API
-PORT=5173
-BASE_PATH=/
+# Shared internal token between Node API ↔ Python AI service.
+# Must match services/ai/.env value.
+INTERNAL_SHARED_SECRET=change-me-to-a-long-random-string
+AI_INTERNAL_TOKEN=change-me-to-a-long-random-string
 ```
 
-> **Note:** There is no committed `.env.example` in the repo yet; copy the block above into `.env` and adjust values. Never commit real passwords to Git.
+**2. `services/ai/.env` (Python AI service)**:
 
-**Windows PowerShell** (per terminal session):
+```env
+DATABASE_URL=<same Supabase URL as root .env>
+SUPABASE_URL=<same as root>
+SUPABASE_SERVICE_KEY=<same as root>
 
-```powershell
-$env:DATABASE_URL = "postgres://user:password@localhost:5432/maverick"
-$env:PORT = "8080"
-$env:NODE_ENV = "development"
+AZURE_OPENAI_ENDPOINT=https://<resource>.openai.azure.com/
+AZURE_OPENAI_API_KEY=<your key>
+AZURE_OPENAI_DEPLOYMENT=gpt-4.1
+AZURE_OPENAI_API_VERSION=2024-12-01-preview
+AZURE_OPENAI_EMBEDDING_DEPLOYMENT=text-embedding-ada-002
+
+INTERNAL_SHARED_SECRET=<MUST match root .env value>
 ```
 
-For the frontend terminal, set `$env:PORT = "5173"` and `$env:BASE_PATH = "/"`.
+**3. `artifacts/maverick/.env` (Frontend / Auth0)**:
 
-**macOS / Linux:**
-
-```bash
-export DATABASE_URL="postgres://user:password@localhost:5432/maverick"
-export PORT=8080
-export NODE_ENV=development
+```env
+VITE_AUTH0_DOMAIN=<your-tenant>.us.auth0.com
+VITE_AUTH0_CLIENT_ID=<spa client id>
+VITE_AUTH0_AUDIENCE=<api audience>
 ```
+
+> ⚠️ **Important:** `INTERNAL_SHARED_SECRET` in the root `.env` and in `services/ai/.env` must be **identical** — it's the shared secret the Node API uses to authenticate to the AI service. Mismatched values give you 401s on every Copilot / PDF / Feedback Intelligence call.
+
+> ⚠️ Never commit real passwords to git. The `.gitignore` already excludes `.env` files.
 
 ---
 
 ## Run locally (Windows / macOS / Linux)
 
-> ✅ **Verified working locally** on Windows 10 + PowerShell 5.1, Node 24, Python 3.12 on 2026-05-24. All three layers (API · Frontend · AI) brought up successfully against Supabase Postgres + Azure OpenAI GPT-4.1.
+> ✅ **Verified working** on Windows 10 + PowerShell 5.1, Node 24, Python 3.12 against Supabase Postgres + Azure OpenAI GPT-4.1.
 
-The platform runs as **three independent processes**. Open one PowerShell terminal per service from the repo root.
+The platform runs as **three independent processes** (the three layers). Open one terminal per service from the repo root.
 
-### Quick reference — three layers, three commands (Windows PowerShell)
+### ⚠️ Important steps before running
+
+1. **Run `pnpm install` once** at the repo root.
+2. **Create the three `.env` files** with real values — root, `services/ai/`, and `artifacts/maverick/`. See [Configuration and secrets](#configuration-and-secrets).
+3. **Apply Supabase migrations once** — `python scripts/apply_*.py` for each migration helper. There is no local DB to set up.
+4. **First-time AI service setup** — create the Python venv and install `requirements.txt` (see Terminal 3 below). Subsequent runs skip this.
+5. **`INTERNAL_SHARED_SECRET` must match** between root `.env` and `services/ai/.env`, otherwise the Copilot / PDF / Feedback Intelligence calls return 401.
+
+### Three layers, three commands (quick reference)
+
+Same as the table at the top of this README, kept here for jump-back convenience.
 
 | # | Layer | Port | Command (run from repo root, one per terminal) |
 |---|-------|------|------------------------------------------------|
-| 1 | **Node API** (`@workspace/api-server`) | **8080** | `Get-Content .env \| Where-Object {$_ -match '^[A-Z]'} \| ForEach-Object { $p=$_ -split '=',2; [Environment]::SetEnvironmentVariable($p[0],$p[1],'Process') }; pnpm --filter @workspace/api-server run build; pnpm --filter @workspace/api-server run start` |
-| 2 | **React Frontend** (`@workspace/maverick`, Vite) | **5173** | `$env:PORT="5173"; $env:BASE_PATH="/"; pnpm --filter @workspace/maverick run dev` |
-| 3 | **Python AI Service** (FastAPI / Azure OpenAI GPT-4.1) | **9000** | `& services/ai/.venv/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --app-dir services/ai` |
+| 1 | **Node API** (`@workspace/api-server`) | **8080** | `pnpm --filter @workspace/api-server run build && pnpm --filter @workspace/api-server run start` |
+| 2 | **React Frontend** (Vite) | **5173** | `pnpm --filter @workspace/maverick run dev` |
+| 3 | **Python AI Service** (FastAPI) | **9000** | `python -m uvicorn app.main:app --host 0.0.0.0 --port 9000 --app-dir services/ai` |
+
+> **Windows PowerShell tip:** the bundled `pnpm --filter @workspace/api-server run dev` uses Unix `export` syntax and fails on PowerShell. Use the `build && start` form above instead. PowerShell does not support `&&` (it's PSv5.1) — replace it with `;` on Windows: `pnpm --filter @workspace/api-server run build; pnpm --filter @workspace/api-server run start`.
 
 Health checks (after each service is up):
 
@@ -355,32 +458,22 @@ Open the app at **http://localhost:5173**.
 
 ### Terminal 1 — Node API server (port 8080)
 
-The packaged `dev` script uses Unix `export`, so on Windows we load `.env` ourselves and run `build` + `start` directly:
+Reads `.env` via `dotenv` at boot, so no manual env loading needed. The packaged `dev` script uses Unix `export` (works on macOS / Linux / Git Bash); on Windows PowerShell run `build` + `start` directly:
 
 ```powershell
-# From repo root
-Get-Content .env | Where-Object {$_ -match '^[A-Z]'} | ForEach-Object {
-  $p = $_ -split '=',2
-  [Environment]::SetEnvironmentVariable($p[0], $p[1], 'Process')
-}
-$env:NODE_ENV = "development"
-$env:PORT     = "8080"
-
+# Windows PowerShell — from repo root
 pnpm --filter @workspace/api-server run build
 pnpm --filter @workspace/api-server run start
 ```
 
-On macOS / Linux / Git Bash the bundled script works as-is:
-
 ```bash
+# macOS / Linux / Git Bash
 pnpm --filter @workspace/api-server run dev
 ```
 
 ### Terminal 2 — React frontend (port 5173)
 
-```powershell
-$env:PORT      = "5173"
-$env:BASE_PATH = "/"
+```bash
 pnpm --filter @workspace/maverick run dev
 ```
 
@@ -418,13 +511,21 @@ Health check: `GET http://localhost:9000/healthz`. Interactive docs at `http://l
 
 The frontend expects the API at **`/api`**. The Vite dev server (`artifacts/maverick/vite.config.ts`) proxies `/api` → `http://127.0.0.1:8080`. In production, your reverse proxy or static-host rewrite (e.g. Vercel `vercel.json`, Azure Static Web Apps `staticwebapp.config.json`) should do the same.
 
-### First-time database
+### First-time database (Supabase)
+
+Apply the SQL migrations to your Supabase database (idempotent — safe to re-run):
 
 ```bash
-pnpm --filter @workspace/db run push
+python scripts/apply_copilot_migration.py
+python scripts/apply_monitoring_migration.py
+python scripts/apply_trainer_scores_migration.py
+python scripts/apply_feedback_intelligence_migration.py
+python scripts/apply_dashboard_kpis_migration.py
 ```
 
-Create users through the **Users** admin UI after logging in with an account you insert into the database, or add seed data yourself.
+> Alternative: open `lib/db/migrations/*.sql` and paste each file into the Supabase SQL editor in numeric order.
+
+Create users through the **Users** admin UI after logging in with an admin account. The Auth0 token exchange (`/api/auth/exchange`) upserts the user on first sign-in; you can then promote yourself to `admin` directly in Supabase or seed an initial admin row in the `users` table.
 
 ---
 
@@ -765,42 +866,6 @@ Trigger output captures: alerts created (across all 8 monitoring rules), emails 
 
 ---
 
-## Running locally — secret-key checklist
-
-The platform needs **three** env files (none committed to git). After cloning, copy each `.env.example` to `.env` in the same directory and fill in real values:
-
-| File | Vars |
-|---|---|
-| `.env` (repo root) | `DATABASE_URL`, `PORT`, `NODE_ENV`, `INTERNAL_SHARED_SECRET` / `AI_INTERNAL_TOKEN` (same value), `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SUPABASE_ANON_KEY` |
-| `services/ai/.env` | `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT` (e.g. `gpt-4.1`), `AZURE_OPENAI_API_VERSION` (e.g. `2024-12-01-preview`), `AZURE_OPENAI_EMBEDDING_DEPLOYMENT`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `DATABASE_URL`, `INTERNAL_SHARED_SECRET` (must match root) |
-| `artifacts/maverick/.env` | `VITE_AUTH0_DOMAIN`, `VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE` |
-
-**Once env files are in place:**
-
-```powershell
-# DB migrations (first-time only)
-python scripts/apply_copilot_migration.py
-python scripts/apply_monitoring_migration.py
-python scripts/apply_trainer_scores_migration.py
-python scripts/apply_feedback_intelligence_migration.py
-
-# Terminal 1 — Node API
-pnpm --filter @workspace/api-server run build
-pnpm --filter @workspace/api-server run start
-
-# Terminal 2 — Frontend
-$env:PORT="5173"; $env:BASE_PATH="/"
-pnpm --filter @workspace/maverick run dev
-
-# Terminal 3 — Python AI service
-cd services/ai
-.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 9000
-```
-
-**Verify:** `http://localhost:8080/api/healthz` → `{"status":"ok"}`, `http://localhost:5173/` → 200, `http://localhost:9000/healthz` → `{"ok":true}`.
-
----
-
 ## Product modules
 
 | Module | Description |
@@ -846,12 +911,16 @@ pnpm --filter @workspace/db run push            # Push schema to PostgreSQL (dev
 
 | Issue | What to check |
 |-------|----------------|
-| `DATABASE_URL must be set` | Set `DATABASE_URL` in your local `.env` (or your host's environment variables) |
-| `PORT environment variable is required` | Set `PORT` before starting API or Vite |
-| `Use pnpm instead` | Install pnpm; do not use `npm install` at root |
-| API changes not reflected | API `dev` rebuilds on start — restart the process |
-| `/api` 404 locally | Vite dev proxy is in `artifacts/maverick/vite.config.ts`; confirm the Node API is on 8080 |
-| Type errors after API change | Run `pnpm --filter @workspace/api-spec run codegen` |
+| `DATABASE_URL must be set` | Set `DATABASE_URL` to your **Supabase** connection string in the root `.env` (not a localhost URL). |
+| `connect ECONNREFUSED 127.0.0.1:5432` | You're trying to use a local Postgres — there isn't one. Switch `DATABASE_URL` to the hosted Supabase pooler URL from Supabase → Settings → Database. |
+| `PORT environment variable is required` | Set `PORT=8080` in the root `.env` before starting the API. |
+| `Use pnpm instead` | Install pnpm (`npm install -g pnpm`); do not use `npm install` at root. |
+| Copilot / PDF returns 401 from AI service | `INTERNAL_SHARED_SECRET` mismatch between root `.env` and `services/ai/.env` — make them identical and restart both. |
+| API changes not reflected | The API runs the built bundle — rerun `pnpm --filter @workspace/api-server run build` then restart Terminal 1. |
+| `/api` 404 locally | Vite dev proxy is in `artifacts/maverick/vite.config.ts`; confirm the Node API is up on **8080**. |
+| Type errors after API change | Run `pnpm --filter @workspace/api-spec run codegen` to regenerate Zod + React Query hooks. |
+| PDF download is slow / times out | The AI narrative call takes a few seconds — the button shows a spinner. If the AI service is down, the PDF still ships with a deterministic fallback narrative (`X-AI-Generated: 0` header). |
+| Walkthrough doesn't auto-open | Already seen once — clear localStorage key `walkthrough_seen` to re-trigger, or click the `?` icon in the header. |
 
 
 ---
