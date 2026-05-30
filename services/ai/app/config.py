@@ -1,6 +1,16 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings
 from azure.identity import DefaultAzureCredential
 from azure.keyvault.secrets import SecretClient
+
+# Absolute path to services/ai/.env (config.py lives at services/ai/app/config.py,
+# so the service root is one level up from this file's directory). Anchoring the
+# env_file to the module location means settings load correctly no matter what
+# working directory uvicorn is launched from — launching from the repo root with
+# `--app-dir services/ai` previously caused the root .env (which lacks the Azure
+# OpenAI keys) to be read instead, leaving the LLM unconfigured.
+_ENV_FILE = Path(__file__).resolve().parents[1] / ".env"
 
 
 class Settings(BaseSettings):
@@ -27,7 +37,7 @@ class Settings(BaseSettings):
     SUPABASE_DB_PASSWORD: str = ""
 
     class Config:
-        env_file = ".env"
+        env_file = str(_ENV_FILE)
         env_file_encoding = "utf-8"
         extra = "ignore"
 
