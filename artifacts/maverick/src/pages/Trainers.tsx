@@ -63,7 +63,7 @@ export default function Trainers() {
                 {!isLoading && trainers.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={4} className="text-center py-8 text-muted-foreground">
-                      No trainers in the system yet. Add one from <Link href="/users"><a className="underline">Users</a></Link>.
+                      No trainers in the system yet. Add one from <Link href="/users" className="underline">Users</Link>.
                     </TableCell>
                   </TableRow>
                 )}

@@ -18,6 +18,7 @@ import { Users, Calendar, UserCheck, Trophy, Plus, Trash2, UserPlus } from "luci
 import { Link } from "wouter";
 import { Progress } from "@/components/ui/progress";
 import { FeedbackIntelligenceCard } from "@/components/FeedbackIntelligenceCard";
+import { getToken } from "@/lib/auth";
 import { useAuth } from "@/hooks/useAuth";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -637,7 +638,7 @@ function AttendanceSettingsSection({ batchId }: { batchId: number }) {
   useEffect(() => {
     let cancelled = false;
     async function load() {
-      const token = localStorage.getItem("token") ?? "";
+      const token = getToken() ?? "";
       const r = await fetch(`/api/batches/${batchId}/attendance-settings`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -656,7 +657,7 @@ function AttendanceSettingsSection({ batchId }: { batchId: number }) {
   async function handleSave() {
     setSaving(true);
     try {
-      const token = localStorage.getItem("token") ?? "";
+      const token = getToken() ?? "";
       const r = await fetch(`/api/batches/${batchId}/attendance-settings`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },

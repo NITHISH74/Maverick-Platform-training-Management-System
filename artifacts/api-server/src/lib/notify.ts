@@ -27,13 +27,22 @@ export type NotificationType =
   | "feedback_request"
   | "escalation";
 
+/**
+ * Address CC'd on every automated alert / feedback email (the escalation
+ * inbox). Configurable via NOTIFICATION_CC; defaults to the project owner so
+ * the demo works out of the box even without env config.
+ */
+export const ESCALATION_CC = process.env.NOTIFICATION_CC ?? "nithishwarsenthilkumaran@gmail.com";
+
 export interface SendNotificationInput {
   type: NotificationType;
   to: string;
+  cc?: string | string[] | null;
   recipientName?: string | null;
   recipientId?: number | null;
   subject: string;
   body: string;
+  html?: string | null;
   batchId?: number | null;
   candidateId?: number | null;
   urgency?: number; // 1 (info) — 5 (critical)
@@ -52,8 +61,10 @@ export interface SendNotificationResult {
 export async function sendNotification(input: SendNotificationInput): Promise<SendNotificationResult> {
   const delivery = await sendMonitoringEmail({
     to: input.to,
+    cc: input.cc ?? null,
     subject: input.subject,
     body: input.body,
+    html: input.html ?? null,
     recipientId: input.recipientId ?? null,
     recipientRole: null,
   });

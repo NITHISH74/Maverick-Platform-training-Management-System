@@ -48,6 +48,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_RIGHT
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
@@ -437,6 +438,29 @@ _COLUMN_LAYOUTS: dict[str, list[tuple[str, str, int]]] = {
 }
 
 
+# Numeric columns are right-aligned in the appendix table so figures line up
+# under their headers. Everything else is left-aligned.
+_NUMERIC_KEYS: frozenset[str] = frozenset(
+    {
+        "rank",
+        "score",
+        "maxScore",
+        "percentage",
+        "totalScore",
+        "assessmentScore",
+        "projectScore",
+        "attendanceScore",
+        "attendancePct",
+        "avgScore",
+    }
+)
+
+
+def _xml_escape(s: str) -> str:
+    """Escape the characters reportlab's Paragraph parser treats as markup."""
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
 class _NumberedDocTemplate(BaseDocTemplate):
     """BaseDocTemplate variant that draws a header (title + generated-at) and
     a footer with "Page N of M" on every page. Two-pass render via
@@ -633,17 +657,46 @@ def _build_pdf(
     layout = _COLUMN_LAYOUTS.get(report_type) or [
         (k, k, 30) for k in (rows[0].keys() if rows else [])
     ]
-    table_data: list[list[str]] = [[label for label, _, _ in layout]]
+
+    # Cells are rendered as Paragraphs, not raw strings: reportlab does not
+    # wrap bare strings inside fixed-width columns, so long values (batch /
+    # candidate names) used to overflow into the next column. Paragraphs wrap
+    # within the column and let the row height grow as needed.
+    cell_style = ParagraphStyle(
+        "appendix_cell",
+        parent=body,
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        textColor=colors.HexColor("#111827"),
+    )
+    cell_right = ParagraphStyle("appendix_cell_right", parent=cell_style, alignment=TA_RIGHT)
+    header_cell = ParagraphStyle(
+        "appendix_header", parent=cell_style, fontName="Helvetica-Bold"
+    )
+    header_right = ParagraphStyle("appendix_header_right", parent=header_cell, alignment=TA_RIGHT)
+
+    def _cell(value: str, key: str, *, header: bool) -> Paragraph:
+        numeric = key in _NUMERIC_KEYS
+        if header:
+            return Paragraph(_xml_escape(value), header_right if numeric else header_cell)
+        return Paragraph(_xml_escape(value), cell_right if numeric else cell_style)
+
+    table_data: list[list[Paragraph]] = [
+        [_cell(label, key, header=True) for label, key, _ in layout]
+    ]
     for r in rows:
         row_cells = []
         for _, key, _ in layout:
             v = r.get(key, "")
-            if v is None:
+            if v is None or v == "":
                 v = "—"
             s = str(v)
-            if len(s) > 30:
-                s = s[:27] + "…"
-            row_cells.append(s)
+            # Generous cap — wrapping handles normal lengths; this only guards
+            # against a pathological single value blowing up a page.
+            if len(s) > 200:
+                s = s[:197] + "…"
+            row_cells.append(_cell(s, key, header=False))
         table_data.append(row_cells)
 
     col_widths = [w * mm for _, _, w in layout]
@@ -658,7 +711,8 @@ def _build_pdf(
                     ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#111827")),
                     ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#fafafa")]),
                     ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#e5e7eb")),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("VALIGN", (0, 0), (-1, 0), "MIDDLE"),
+                    ("VALIGN", (0, 1), (-1, -1), "TOP"),
                     ("LEFTPADDING", (0, 0), (-1, -1), 4),
                     ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                     ("TOPPADDING", (0, 0), (-1, -1), 3),

@@ -17,6 +17,7 @@
     "drizzle-orm": "catalog:",
     "express": "^5",
     "node-cron": "^3.0.3",
+    "nodemailer": "^6.9.16",
     "pino": "^9",
     "pino-http": "^10"
   },

@@ -49,11 +49,10 @@ export default function TrainerDetail() {
     <Layout>
       <div className="space-y-6">
         <div className="flex items-center gap-3">
-          <Link href="/users">
-            <a className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-              <ArrowLeft className="h-4 w-4" />
-              Back to users
-            </a>
+          {/* wouter v3 <Link> renders the <a> itself — don't nest another. */}
+          <Link href="/users" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
+            <ArrowLeft className="h-4 w-4" />
+            Back to users
           </Link>
         </div>
         <div>
