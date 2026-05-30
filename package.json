@@ -7,6 +7,7 @@
     "typecheck:libs": "tsc --build",
     "typecheck": "pnpm run typecheck:libs && pnpm -r --filter \"./artifacts/**\" --filter \"./scripts\" --if-present run typecheck",
     "demo:seed": "pnpm --filter @workspace/scripts exec tsx ./src/demo-test-seed.ts",
+    "demo:attendance:seed": "pnpm --filter @workspace/scripts exec tsx ./src/seed-attendance-demo.ts",
     "demo:trigger": "pnpm --filter @workspace/scripts exec tsx ./src/demo-test-trigger.ts",
     "demo:cleanup": "pnpm --filter @workspace/scripts exec tsx ./src/demo-test-cleanup.ts",
     "demo:cleanup:delete": "pnpm --filter @workspace/scripts exec tsx ./src/demo-test-cleanup.ts delete"

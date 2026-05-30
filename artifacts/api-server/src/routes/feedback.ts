@@ -1,10 +1,34 @@
 import { Router, type IRouter } from "express";
 import { eq, and, inArray } from "drizzle-orm";
-import { db, feedbackTable, batchesTable, candidatesTable, feedbackWindowsTable } from "@workspace/db";
+import { db, feedbackTable, batchesTable, candidatesTable, feedbackWindowsTable, usersTable } from "@workspace/db";
 import { SubmitFeedbackBody, TriggerFeedbackEmailBody, ListFeedbackQueryParams, GetFeedbackSummaryQueryParams } from "@workspace/api-zod";
 import { authMiddleware, requireRole } from "../middlewares/auth";
 import { getTrainerBatchIds, writeAudit } from "../lib/rbac";
-import { sendNotification } from "../lib/notify";
+import { sendNotification, ESCALATION_CC } from "../lib/notify";
+
+// Render a plain-text feedback template into an HTML email: escape, turn the
+// MS Forms URL into a button, preserve line breaks, and append a due-date note.
+function renderFeedbackHtml(textBody: string, msFormsLink: string, dueDate: string | null, dueTime: string | null): string {
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const safeLink = esc(msFormsLink);
+  const bodyHtml = esc(textBody)
+    // Replace the raw link (or its placeholder) with a styled button.
+    .replace(safeLink, `<a href="${safeLink}" style="display:inline-block;padding:10px 18px;background:#2563eb;color:#ffffff;text-decoration:none;border-radius:6px;">Open Feedback Form</a>`)
+    .replace(/\n/g, "<br />");
+  const dueLine = dueDate
+    ? `<p style="margin:16px 0;padding:10px 14px;background:#f3f4f6;border-radius:6px;"><strong>Due by:</strong> ${esc(dueDate)}${dueTime ? ` at ${esc(dueTime)}` : ""} IST</p>`
+    : "";
+  return (
+    `<div style="font-family:Arial,Helvetica,sans-serif;color:#1f2937;line-height:1.6;">` +
+    `<p>${bodyHtml}</p>` +
+    dueLine +
+    `<p style="margin-top:16px;">If the button above doesn't work, paste this link into your browser:<br />` +
+    `<a href="${safeLink}">${safeLink}</a></p>` +
+    `<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;" />` +
+    `<p style="font-size:12px;color:#6b7280;">Sent via the Maverick Execution Platform.</p>` +
+    `</div>`
+  );
+}
 
 const router: IRouter = Router();
 
@@ -122,6 +146,7 @@ router.post("/feedback/send-request", authMiddleware, requireRole("admin", "coor
   if (!Number.isFinite(batchId)) { res.status(400).json({ error: "batch_id required" }); return; }
   if (!subject.trim() || !body.trim()) { res.status(400).json({ error: "subject and body are required" }); return; }
   if (!msFormsLink.trim()) { res.status(400).json({ error: "ms_forms_link is required" }); return; }
+  if (!/^https:\/\//i.test(msFormsLink.trim())) { res.status(400).json({ error: "ms_forms_link must start with https://" }); return; }
 
   const [batch] = await db.select().from(batchesTable).where(eq(batchesTable.id, batchId));
   if (!batch) { res.status(404).json({ error: "Batch not found" }); return; }
@@ -144,12 +169,15 @@ router.post("/feedback/send-request", authMiddleware, requireRole("admin", "coor
     const personalisedSubject = subject
       .replace(/\[Batch Name\]/g, batch.name)
       .replace(/\[Candidate Name\]/g, c.name);
+    const personalisedHtml = renderFeedbackHtml(personalisedBody, msFormsLink, dueDate, dueTime);
     const r = await sendNotification({
       type: "feedback_request",
       to: c.email,
+      cc: ESCALATION_CC,
       recipientName: c.name,
       subject: personalisedSubject,
       body: personalisedBody,
+      html: personalisedHtml,
       batchId,
       candidateId: c.id,
       urgency: 1,
@@ -159,7 +187,7 @@ router.post("/feedback/send-request", authMiddleware, requireRole("admin", "coor
 
   // Upsert the window config so the page can show "last sent on …".
   const now = new Date();
-  await db.insert(feedbackWindowsTable).values({
+  const [window] = await db.insert(feedbackWindowsTable).values({
     batchId,
     msFormsLink,
     dueDate,
@@ -180,17 +208,17 @@ router.post("/feedback/send-request", authMiddleware, requireRole("admin", "coor
       sentBy: req.userId ?? null,
       updatedAt: now,
     },
-  });
+  }).returning({ id: feedbackWindowsTable.id });
 
   await writeAudit({
     actorId: req.userId,
     action: "feedback_request_sent",
     entityType: "batch",
     entityId: batchId,
-    details: { batch_name: batch.name, candidates: candidates.length, sent, failed, ms_forms_link: msFormsLink },
+    details: { batch_name: batch.name, candidates: candidates.length, sent, failed, recipient_count: sent, ms_forms_link: msFormsLink },
   });
 
-  res.json({ batchId, candidates: candidates.length, sent, failed });
+  res.json({ batchId, candidates: candidates.length, sent, failed, window_id: window?.id ?? null });
 });
 
 // V6 F5: download all feedback for a batch as CSV.
@@ -210,26 +238,47 @@ router.get("/feedback/download/:batchId", authMiddleware, async (req, res): Prom
   const records = await db.select().from(feedbackTable).where(eq(feedbackTable.batchId, batchId));
   const candIds = Array.from(new Set(records.map(r => r.candidateId).filter((x): x is number => x != null)));
   const cands = candIds.length > 0
-    ? await db.select({ id: candidatesTable.id, name: candidatesTable.name }).from(candidatesTable).where(inArray(candidatesTable.id, candIds))
+    ? await db.select({ id: candidatesTable.id, name: candidatesTable.name, candidateId: candidatesTable.candidateId })
+        .from(candidatesTable).where(inArray(candidatesTable.id, candIds))
     : [];
-  const nameById = new Map(cands.map(c => [c.id, c.name]));
+  const candById = new Map(cands.map(c => [c.id, c]));
 
+  const trainerIds = Array.from(new Set(records.map(r => r.trainerId).filter((x): x is number => x != null)));
+  const trainers = trainerIds.length > 0
+    ? await db.select({ id: usersTable.id, name: usersTable.name }).from(usersTable).where(inArray(usersTable.id, trainerIds))
+    : [];
+  const trainerById = new Map(trainers.map(t => [t.id, t.name]));
+
+  // Column headers map to the MS Form fields. The Supabase `feedback` table
+  // stores one rating + response_text, so Session/Trainer Rating reuse the
+  // single rating (same convention as the enrichFeedback() API response).
   const escape = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const header = ["Candidate Name", "Submitted At", "Rating", "Sentiment", "Response"];
+  const header = ["Candidate Name", "Candidate ID", "Trainer Name", "Session Rating", "Trainer Rating", "Overall Feedback", "Submitted At"];
   const lines = [header.map(escape).join(",")];
   for (const r of records) {
-    const sentiment = r.rating == null ? "" : r.rating >= 4 ? "positive" : r.rating >= 3 ? "neutral" : "negative";
+    const cand = r.candidateId ? candById.get(r.candidateId) : undefined;
     lines.push([
-      r.candidateId ? (nameById.get(r.candidateId) ?? `#${r.candidateId}`) : "Anonymous",
-      r.createdAt ? new Date(r.createdAt).toISOString() : "",
+      cand?.name ?? (r.candidateId ? `#${r.candidateId}` : "Anonymous"),
+      cand?.candidateId ?? "",
+      r.trainerId ? (trainerById.get(r.trainerId) ?? `#${r.trainerId}`) : "",
       r.rating ?? "",
-      sentiment,
+      r.rating ?? "",
       r.responseText ?? "",
+      r.createdAt ? new Date(r.createdAt).toISOString() : "",
     ].map(escape).join(","));
   }
   const csv = lines.join("\n");
   const safeName = batch.name.replace(/[^a-z0-9_\-]+/gi, "_");
   const dateStr = new Date().toISOString().slice(0, 10);
+
+  await writeAudit({
+    actorId: req.userId,
+    action: "feedback_responses_downloaded",
+    entityType: "batch",
+    entityId: batchId,
+    details: { batch_name: batch.name, response_count: records.length, format: "csv" },
+  });
+
   res.setHeader("Content-Type", "text/csv; charset=utf-8");
   res.setHeader("Content-Disposition", `attachment; filename="feedback_${safeName}_${dateStr}.csv"`);
   res.send(csv);

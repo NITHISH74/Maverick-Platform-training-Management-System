@@ -32,9 +32,13 @@ create index if not exists idx_attendance_settings_batch on attendance_settings(
 
 -- Seed from the existing batches.attendance_cutoff_time so per-batch
 -- configuration the coordinator already set isn't lost.
+-- Cast the source column to text first so this works whether
+-- batches.attendance_cutoff_time is stored as `text` ('10:00') or as a
+-- native `time` ('10:00:00') in the live DB. '10:00'::time and
+-- '10:00:00'::time are both valid, so no manual ':00' suffix is needed.
 insert into attendance_settings (batch_id, due_time, enabled)
 select id,
-       (coalesce(nullif(attendance_cutoff_time, ''), '10:00') || ':00')::time,
+       coalesce(nullif(attendance_cutoff_time::text, ''), '10:00')::time,
        true
 from batches
 where deleted_at is null

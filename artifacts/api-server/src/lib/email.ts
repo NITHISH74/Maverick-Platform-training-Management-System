@@ -23,6 +23,12 @@ export interface EmailMessage {
   to: string;
   subject: string;
   body: string;
+  // Optional CC line — used by the V6/V7 alert + feedback emails to copy the
+  // coordinator and the escalation inbox. Accepts a single address or a list.
+  cc?: string | string[] | null;
+  // Optional HTML body. When set it's the rendered email; `body` is still kept
+  // as the plain-text fallback (and is what gets persisted to the audit log).
+  html?: string | null;
   // Metadata for the audit log
   alertId?: number | null;
   recipientId?: number | null;
@@ -37,7 +43,7 @@ export interface EmailSendResult {
 
 // Lazy-import nodemailer so the api-server boots cleanly even if
 // nodemailer wasn't installed (it's listed as an optional dep).
-let _transport: { sendMail: (m: { from: string; to: string; subject: string; text: string }) => Promise<unknown> } | null = null;
+let _transport: { sendMail: (m: { from: string; to: string; cc?: string; subject: string; text: string; html?: string }) => Promise<unknown> } | null = null;
 let _transportInitTried = false;
 
 async function getSmtpTransport(): Promise<typeof _transport> {
@@ -48,8 +54,10 @@ async function getSmtpTransport(): Promise<typeof _transport> {
   if (!host) return null;
 
   try {
-    // dynamic import keeps nodemailer optional
+    // dynamic import keeps nodemailer optional; it ships no bundled types so
+    // we suppress the missing-declaration error and treat it as `any`.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    // @ts-ignore -- nodemailer has no type declarations
     const nodemailer: any = await import("nodemailer");
     _transport = nodemailer.createTransport({
       host,
@@ -68,11 +76,21 @@ async function getSmtpTransport(): Promise<typeof _transport> {
   return _transport;
 }
 
+// Normalise a single address or list into a comma-separated header value.
+function ccLine(cc: EmailMessage["cc"]): string | undefined {
+  if (!cc) return undefined;
+  const list = Array.isArray(cc) ? cc : [cc];
+  const cleaned = list.map((c) => c.trim()).filter(Boolean);
+  return cleaned.length > 0 ? cleaned.join(", ") : undefined;
+}
+
 async function deliverViaConsole(msg: EmailMessage): Promise<EmailSendResult> {
+  const cc = ccLine(msg.cc);
   // Pretty-print in a way the demo can grep for.
   logger.info(
     {
       to: msg.to,
+      cc,
       subject: msg.subject,
       role: msg.recipientRole,
       alertId: msg.alertId,
@@ -83,6 +101,7 @@ async function deliverViaConsole(msg: EmailMessage): Promise<EmailSendResult> {
   console.log(
     `\n┌─ EMAIL (console transport) ────────────────────────────\n` +
       `│ To:      ${msg.to}\n` +
+      (cc ? `│ Cc:      ${cc}\n` : "") +
       `│ Subject: ${msg.subject}\n` +
       `│ Role:    ${msg.recipientRole ?? "-"}\n` +
       `│ AlertId: ${msg.alertId ?? "-"}\n` +
@@ -96,7 +115,14 @@ async function deliverViaConsole(msg: EmailMessage): Promise<EmailSendResult> {
 async function deliverViaSmtp(msg: EmailMessage, t: NonNullable<typeof _transport>): Promise<EmailSendResult> {
   const from = process.env.SMTP_FROM ?? "maverick-monitor@example.com";
   try {
-    await t.sendMail({ from, to: msg.to, subject: msg.subject, text: msg.body });
+    await t.sendMail({
+      from,
+      to: msg.to,
+      cc: ccLine(msg.cc),
+      subject: msg.subject,
+      text: msg.body,
+      html: msg.html ?? undefined,
+    });
     return { ok: true, provider: "smtp" };
   } catch (e) {
     return { ok: false, provider: "smtp", error: e instanceof Error ? e.message : String(e) };

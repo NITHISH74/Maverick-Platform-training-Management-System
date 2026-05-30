@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogD
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { Download, Mail } from "lucide-react";
+import { getToken } from "@/lib/auth";
 
 const DEFAULT_BODY =
   "Dear [Candidate Name],\n\n" +
@@ -20,7 +21,7 @@ const DEFAULT_BODY =
   "Thank you.";
 
 async function fetchAuthed(path: string, init: RequestInit = {}) {
-  const token = localStorage.getItem("token") ?? "";
+  const token = getToken() ?? "";
   return fetch(path, {
     ...init,
     headers: {

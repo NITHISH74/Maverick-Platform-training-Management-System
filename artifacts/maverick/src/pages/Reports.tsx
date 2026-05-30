@@ -494,8 +494,11 @@ export default function Reports() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {topperReport.map((r) => (
-                          <TableRow key={r.rank} className={r.rank <= 3 ? "bg-muted/30" : ""}>
+                        {topperReport.map((r, i) => (
+                          // key on index, not r.rank — ranks repeat across batches
+                          // in the "All Batches" view, which collided and produced
+                          // React duplicate-key warnings.
+                          <TableRow key={i} className={r.rank <= 3 ? "bg-muted/30" : ""}>
                             <TableCell className="font-bold text-center">
                               {r.rank === 1 ? "1st" : r.rank === 2 ? "2nd" : r.rank === 3 ? "3rd" : `${r.rank}th`}
                             </TableCell>

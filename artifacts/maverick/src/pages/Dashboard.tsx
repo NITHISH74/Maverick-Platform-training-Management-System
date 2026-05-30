@@ -338,10 +338,8 @@ function MonitoringSummaryCard() {
             </p>
           </div>
         </div>
-        <Link href="/monitoring">
-          <a className="inline-flex items-center gap-1 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted whitespace-nowrap">
-            View <ArrowRight className="h-3.5 w-3.5" />
-          </a>
+        <Link href="/monitoring" className="inline-flex items-center gap-1 rounded-md border bg-background px-3 py-1.5 text-xs font-medium hover:bg-muted whitespace-nowrap">
+          View <ArrowRight className="h-3.5 w-3.5" />
         </Link>
       </CardContent>
     </Card>
@@ -384,8 +382,7 @@ function NotClearedAndRemainingTiles() {
   return (
     <div className="grid gap-4 md:grid-cols-2">
       <Link href="/candidates?status=not_cleared">
-        <a>
-          <Card className="border-l-4 border-l-red-500 hover:border-red-600 transition cursor-pointer">
+        <Card className="border-l-4 border-l-red-500 hover:border-red-600 transition cursor-pointer">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Not Cleared</CardTitle>
               <XCircle className="h-4 w-4 text-red-500" />
@@ -400,7 +397,6 @@ function NotClearedAndRemainingTiles() {
               <p className="text-xs text-muted-foreground">Batches whose pass rate is below their clearance threshold</p>
             </CardContent>
           </Card>
-        </a>
       </Link>
 
       <Card className="border-l-4 border-l-blue-500">

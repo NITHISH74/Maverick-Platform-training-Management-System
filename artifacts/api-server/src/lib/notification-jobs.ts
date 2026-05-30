@@ -37,6 +37,7 @@ import { and, eq, gte, sql, desc, isNotNull, isNull } from "drizzle-orm";
 import {
   db,
   batchesTable,
+  batchTrainersTable,
   candidatesTable,
   attendanceTable,
   assessmentsTable,
@@ -45,7 +46,29 @@ import {
   usersTable,
 } from "@workspace/db";
 import { logger } from "./logger";
-import { sendNotification, createInAppNotification, type NotificationType } from "./notify";
+import { sendNotification, createInAppNotification, ESCALATION_CC, type NotificationType } from "./notify";
+
+// Shared HTML wrapper so every alert email has a consistent look.
+function htmlEmail(inner: string): string {
+  return (
+    `<div style="font-family:Arial,Helvetica,sans-serif;color:#1f2937;line-height:1.5;">` +
+    inner +
+    `<hr style="border:none;border-top:1px solid #e5e7eb;margin:20px 0;" />` +
+    `<p style="font-size:12px;color:#6b7280;">This is an automated alert from the Maverick Execution Platform.</p>` +
+    `</div>`
+  );
+}
+
+// Resolve the first assigned trainer for a batch (name + email), if any.
+async function getBatchTrainer(batchId: number): Promise<{ id: number; name: string; email: string } | null> {
+  const [t] = await db
+    .select({ id: usersTable.id, name: usersTable.name, email: usersTable.email })
+    .from(batchTrainersTable)
+    .innerJoin(usersTable, eq(usersTable.id, batchTrainersTable.trainerId))
+    .where(eq(batchTrainersTable.batchId, batchId))
+    .limit(1);
+  return t && t.email ? { id: t.id, name: t.name, email: t.email } : null;
+}
 
 const IST_OFFSET_MINUTES = 330; // Asia/Kolkata = UTC+5:30
 
@@ -121,17 +144,39 @@ export async function runAttendanceCutoffCheck(): Promise<{ batchesChecked: numb
       .limit(1);
     if (alreadySent.length > 0) continue;
 
-    const subject = `Attendance Not Submitted — ${r.batchName}`;
+    // Recipient: the assigned trainer is primary (they submit attendance);
+    // the coordinator + escalation inbox are CC'd. If no trainer is assigned
+    // we fall back to emailing the coordinator directly.
+    const trainer = await getBatchTrainer(r.batchId);
+    const toEmail = trainer?.email ?? r.coordinatorEmail;
+    const toName = trainer?.name ?? r.coordinatorName;
+    const toId = trainer?.id ?? r.coordinatorId;
+    const ccList = [
+      ...(trainer ? [r.coordinatorEmail] : []), // coordinator only if not already the TO
+      ESCALATION_CC,
+    ].filter((e): e is string => !!e && e !== toEmail);
+
+    const subject = `⚠️ Attendance Not Submitted — ${r.batchName} — ${today}`;
     const body =
       `Attendance has not been submitted for ${r.batchName} (${r.batchCode}) ` +
-      `as of ${dueHHMM} IST on ${today}. Please follow up with the trainer.`;
+      `as of ${dueHHMM} IST on ${today}. Please submit attendance immediately via the Maverick TMS portal.`;
+    const html = htmlEmail(
+      `<h2 style="margin:0 0 12px;">Attendance Submission Reminder</h2>` +
+      `<p>Hi ${toName ?? "there"},</p>` +
+      `<p>The daily attendance for <strong>${r.batchName}</strong> (${r.batchCode}) has not been ` +
+      `submitted as of <strong>${dueHHMM} IST</strong> today (${today}).</p>` +
+      `<p>Please submit attendance immediately via the Maverick TMS portal.</p>` +
+      `<p style="color:#6b7280;">If you have already submitted, please ignore this message.</p>`,
+    );
     const result = await sendNotification({
       type: "attendance_cut_off_missed",
-      to: r.coordinatorEmail,
-      recipientName: r.coordinatorName,
-      recipientId: r.coordinatorId,
+      to: toEmail,
+      cc: ccList,
+      recipientName: toName,
+      recipientId: toId,
       subject,
       body,
+      html,
       batchId: r.batchId,
       urgency: 3,
     });
@@ -207,17 +252,38 @@ export async function runConsecutiveAbsenceCheck(): Promise<{ candidatesChecked:
         .limit(1);
       if (already.length > 0) continue;
 
-      const subject = `Absence Alert — ${c.name} — ${b.batchName}`;
+      const subject = `🚨 Absence Alert — ${c.name} — 3 Consecutive Days — ${b.batchName}`;
       const body =
         `${c.name} has been absent for 3 consecutive days ` +
-        `(${dates.join(", ")}) in ${b.batchName}. Please follow up.`;
+        `(${dates.join(", ")}) in ${b.batchName}. Please follow up with the candidate at the earliest.`;
+      const rows = dates
+        .map(
+          (d) =>
+            `<tr><td style="padding:6px 12px;border:1px solid #e5e7eb;">${d}</td>` +
+            `<td style="padding:6px 12px;border:1px solid #e5e7eb;color:#dc2626;">Absent</td></tr>`,
+        )
+        .join("");
+      const html = htmlEmail(
+        `<h2 style="margin:0 0 12px;">Consecutive Absence Alert</h2>` +
+        `<p>Hi ${b.coordinatorName ?? "there"},</p>` +
+        `<p>This is an automated alert to inform you that <strong>${c.name}</strong> has been absent ` +
+        `for <strong>3 consecutive days</strong> in <strong>${b.batchName}</strong>.</p>` +
+        `<table style="border-collapse:collapse;margin:12px 0;">` +
+        `<thead><tr>` +
+        `<th style="padding:6px 12px;border:1px solid #e5e7eb;text-align:left;">Date</th>` +
+        `<th style="padding:6px 12px;border:1px solid #e5e7eb;text-align:left;">Status</th>` +
+        `</tr></thead><tbody>${rows}</tbody></table>` +
+        `<p>Please follow up with the candidate at the earliest.</p>`,
+      );
       const result = await sendNotification({
         type: "consecutive_absence",
         to: b.coordinatorEmail,
+        cc: ESCALATION_CC,
         recipientName: b.coordinatorName,
         recipientId: b.coordinatorId,
         subject,
         body,
+        html,
         batchId: b.batchId,
         candidateId: c.id,
         urgency: 3,
