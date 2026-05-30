@@ -27,6 +27,7 @@ Open **http://localhost:5173** once all three are up. Detailed setup, env vars, 
 - [Key features](#key-features)
 - [Autonomous Batch Monitoring Agent](#autonomous-batch-monitoring-agent)
 - [Coordinator Copilot](#coordinator-copilot)
+- [V7 — HTML Alert Emails, Feedback Email Polish & PDF Report Fixes](#v7--html-alert-emails-feedback-email-polish--pdf-report-fixes)
 - [Techniques used](#techniques-used)
 - [Tech stack](#tech-stack)
 - [Prerequisites](#prerequisites)
@@ -863,6 +864,42 @@ pnpm run demo:cleanup:delete # hard delete in FK-safe order
 ```
 
 Trigger output captures: alerts created (across all 8 monitoring rules), emails fanned out (provider tag + per-recipient), `agent_runs` count (monitoring agent's audit trail), and SMTP misconfiguration warnings. Saves inserted IDs to `scripts/demo-test-ids.json` so the trigger and cleanup scripts can locate the same rows.
+
+---
+
+## V7 — HTML Alert Emails, Feedback Email Polish & PDF Report Fixes
+
+V7 hardens the notification and reporting paths. Every change is **additive or a fix** — no routes or tables were removed; migration `0007_attendance_feedback_notifications.sql` was made portable, and the existing report endpoints keep their CSV/Excel behaviour unchanged.
+
+### 1 — Rich HTML alert emails + escalation CC
+
+The automated notification jobs now send branded **HTML emails** alongside the plain-text body, and CC a shared escalation inbox on every alert.
+
+- **`notify.ts`** — `SendNotificationInput` gained `cc` and `html` fields, both piped through to the email transport. A new exported `ESCALATION_CC` constant (configurable via the **`NOTIFICATION_CC`** env var) is CC'd on every automated alert and feedback email.
+- **Attendance-not-submitted alert** — now addressed to the **assigned trainer** as the primary recipient (they submit attendance), with the coordinator + escalation inbox CC'd; falls back to the coordinator if no trainer is assigned. Subject upgraded to `⚠️ Attendance Not Submitted — <batch> — <date>` and the body is a styled HTML reminder.
+- **Consecutive-absence alert** — subject upgraded to `🚨 Absence Alert — <candidate> — 3 Consecutive Days — <batch>`; the HTML body includes a date/status table of the absent days. Escalation inbox CC'd.
+
+### 2 — Feedback request emails as HTML
+
+`POST /api/feedback/send-request` now renders each personalised plain-text template into an **HTML email** (`renderFeedbackHtml`): the MS Forms link becomes an "Open Feedback Form" button, line breaks are preserved, a "Due by …" banner is shown when a due date is set, and a plain-link fallback is appended. Additional hardening:
+
+- The `ms_forms_link` must start with `https://` (400 otherwise).
+- The endpoint returns `window_id` and the audit row records `recipient_count`.
+
+### 3 — Feedback CSV export improvements
+
+`GET /api/feedback/download/:batchId` now exports columns aligned to the MS Form fields — **Candidate Name, Candidate ID, Trainer Name, Session Rating, Trainer Rating, Overall Feedback, Submitted At** — resolving trainer names from `users`. Each download writes a `feedback_responses_downloaded` audit row.
+
+### 4 — AI PDF report appendix fixes (`reports_pdf.py`)
+
+- **Wrapping cells** — appendix table cells are now rendered as reportlab `Paragraph`s instead of bare strings, so long batch/candidate names wrap within the column and grow row height instead of overflowing into the next column. The old 30-char truncation is replaced with a generous 200-char safety cap.
+- **Right-aligned numerics** — numeric columns (`rank`, `score`, `percentage`, `attendancePct`, etc.) are right-aligned so figures line up under their headers; headers match their column alignment.
+- **XML-safe cells** — values are escaped (`&`, `<`, `>`) before going through reportlab's Paragraph parser.
+
+### 5 — Portable migration & demo seeding
+
+- **`0007_attendance_feedback_notifications.sql`** — the `attendance_settings` seed now casts `attendance_cutoff_time::text` first, so it applies whether the source column is stored as `text` (`'10:00'`) or native `time` (`'10:00:00'`).
+- **`scripts/src/seed-attendance-demo.ts`** + **`scripts/apply_attendance_feedback_migration.py`** — new helpers to seed a demo attendance scenario and apply the migration against Supabase.
 
 ---
 
