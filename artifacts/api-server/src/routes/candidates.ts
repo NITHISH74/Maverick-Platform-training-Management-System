@@ -1,12 +1,13 @@
 import { Router, type IRouter } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, inArray } from "drizzle-orm";
 import { db, candidatesTable, batchesTable } from "@workspace/db";
 import {
   CreateCandidateBody, UpdateCandidateBody, GetCandidateParams, UpdateCandidateParams,
   DeleteCandidateParams, UpdateCandidateStatusParams, UpdateCandidateStatusBody, ListCandidatesQueryParams,
   BulkImportCandidatesBody,
 } from "@workspace/api-zod";
-import { authMiddleware } from "../middlewares/auth";
+import { authMiddleware, requireRole } from "../middlewares/auth";
+import { getTrainerBatchIds, writeAudit } from "../lib/rbac";
 
 const router: IRouter = Router();
 
@@ -21,45 +22,60 @@ async function enrichCandidate(c: typeof candidatesTable.$inferSelect) {
 
 router.get("/candidates", authMiddleware, async (req, res): Promise<void> => {
   const params = ListCandidatesQueryParams.safeParse(req.query);
-  let candidates: typeof candidatesTable.$inferSelect[];
-  if (params.success) {
-    const { batchId, status } = params.data;
-    if (batchId && status) {
-      candidates = await db.select().from(candidatesTable).where(and(eq(candidatesTable.batchId, batchId), eq(candidatesTable.status, status)));
-    } else if (batchId) {
-      candidates = await db.select().from(candidatesTable).where(eq(candidatesTable.batchId, batchId));
-    } else if (status) {
-      candidates = await db.select().from(candidatesTable).where(eq(candidatesTable.status, status));
-    } else {
-      candidates = await db.select().from(candidatesTable);
+  const batchId = params.success ? params.data.batchId : undefined;
+  const status = params.success ? params.data.status : undefined;
+
+  // Trainer scoping: restrict to candidates in batches the trainer is assigned to.
+  let trainerBatchIds: number[] | null = null;
+  if (req.userRole === "trainer" && req.userId) {
+    trainerBatchIds = await getTrainerBatchIds(req.userId);
+    if (trainerBatchIds.length === 0) {
+      res.json([]);
+      return;
     }
-  } else {
-    candidates = await db.select().from(candidatesTable);
+    // If a specific batchId was requested, enforce it belongs to the trainer.
+    if (batchId && !trainerBatchIds.includes(batchId)) {
+      res.json([]);
+      return;
+    }
   }
+
+  const conditions = [];
+  if (batchId) conditions.push(eq(candidatesTable.batchId, batchId));
+  if (status) conditions.push(eq(candidatesTable.status, status));
+  if (trainerBatchIds && !batchId) conditions.push(inArray(candidatesTable.batchId, trainerBatchIds));
+
+  const candidates = conditions.length > 0
+    ? await db.select().from(candidatesTable).where(and(...conditions))
+    : await db.select().from(candidatesTable);
+
   const enriched = await Promise.all(candidates.map(enrichCandidate));
   res.json(enriched);
 });
 
-router.post("/candidates", authMiddleware, async (req, res): Promise<void> => {
+router.post("/candidates", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const parsed = CreateCandidateBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const joinedAt = parsed.data.joinedAt instanceof Date
-    ? parsed.data.joinedAt.toISOString().split("T")[0]
-    : (parsed.data.joinedAt ?? null);
+  // college / degree / joinedAt are accepted in the request body for API
+  // compatibility but Supabase doesn't store those, so they're dropped.
   const [candidate] = await db.insert(candidatesTable).values({
     candidateId: parsed.data.candidateId,
     name: parsed.data.name,
     email: parsed.data.email,
     phone: parsed.data.phone ?? null,
     batchId: parsed.data.batchId ?? null,
-    college: parsed.data.college ?? null,
-    degree: parsed.data.degree ?? null,
-    joinedAt,
     status: "active",
   }).returning();
+  await writeAudit({
+    actorId: req.userId,
+    action: "candidate_created",
+    entityType: "candidate",
+    entityId: candidate.id,
+    details: { after: { name: candidate.name, email: candidate.email, batchId: candidate.batchId }, role: req.userRole, ip: req.ip ?? null },
+  });
   res.status(201).json(await enrichCandidate(candidate));
 });
 
@@ -77,7 +93,7 @@ router.get("/candidates/:id", authMiddleware, async (req, res): Promise<void> =>
   res.json(await enrichCandidate(candidate));
 });
 
-router.patch("/candidates/:id", authMiddleware, async (req, res): Promise<void> => {
+router.patch("/candidates/:id", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const params = UpdateCandidateParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -88,15 +104,29 @@ router.patch("/candidates/:id", authMiddleware, async (req, res): Promise<void> 
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  // Snapshot before so the audit row shows what actually changed.
+  const [pre] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, params.data.id));
   const [candidate] = await db.update(candidatesTable).set(parsed.data).where(eq(candidatesTable.id, params.data.id)).returning();
   if (!candidate) {
     res.status(404).json({ error: "Candidate not found" });
     return;
   }
+  await writeAudit({
+    actorId: req.userId,
+    action: "candidate_updated",
+    entityType: "candidate",
+    entityId: candidate.id,
+    details: {
+      before: pre ? { name: pre.name, email: pre.email, status: pre.status, batchId: pre.batchId } : null,
+      after: { name: candidate.name, email: candidate.email, status: candidate.status, batchId: candidate.batchId },
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
   res.json(await enrichCandidate(candidate));
 });
 
-router.delete("/candidates/:id", authMiddleware, async (req, res): Promise<void> => {
+router.delete("/candidates/:id", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const params = DeleteCandidateParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -107,10 +137,29 @@ router.delete("/candidates/:id", authMiddleware, async (req, res): Promise<void>
     res.status(404).json({ error: "Candidate not found" });
     return;
   }
+  // Audit the removal so it can be reviewed in the audit log UI.
+  await writeAudit({
+    actorId: req.userId,
+    action: "candidate_deleted",
+    entityType: "candidate",
+    entityId: candidate.id,
+    details: {
+      before: {
+        candidateId: candidate.candidateId,
+        name: candidate.name,
+        email: candidate.email,
+        batchId: candidate.batchId,
+        status: candidate.status,
+      },
+      reason: typeof req.body?.reason === "string" ? req.body.reason : undefined,
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
   res.sendStatus(204);
 });
 
-router.patch("/candidates/:id/status", authMiddleware, async (req, res): Promise<void> => {
+router.patch("/candidates/:id/status", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const params = UpdateCandidateStatusParams.safeParse(req.params);
   if (!params.success) {
     res.status(400).json({ error: params.error.message });
@@ -121,47 +170,115 @@ router.patch("/candidates/:id/status", authMiddleware, async (req, res): Promise
     res.status(400).json({ error: parsed.error.message });
     return;
   }
+  const [pre] = await db.select().from(candidatesTable).where(eq(candidatesTable.id, params.data.id));
   const [candidate] = await db.update(candidatesTable).set({ status: parsed.data.status }).where(eq(candidatesTable.id, params.data.id)).returning();
   if (!candidate) {
     res.status(404).json({ error: "Candidate not found" });
     return;
   }
+  await writeAudit({
+    actorId: req.userId,
+    action: "candidate_status_changed",
+    entityType: "candidate",
+    entityId: candidate.id,
+    details: {
+      before_status: pre?.status,
+      after_status: candidate.status,
+      name: candidate.name,
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
   res.json(await enrichCandidate(candidate));
 });
 
-router.post("/candidates/bulk-import", authMiddleware, async (req, res): Promise<void> => {
+router.post("/candidates/bulk-import", authMiddleware, requireRole("admin", "coordinator"), async (req, res): Promise<void> => {
   const parsed = BulkImportCandidatesBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
   const { batchId, candidates } = parsed.data;
-  let inserted = 0;
-  let failed = 0;
-  const errors: string[] = [];
 
-  for (const c of candidates) {
+  // V6 F3: surface ALL duplicates instead of silently treating them as failures.
+  // A duplicate = same name+batch OR same email+batch already on file.
+  const existing = await db
+    .select({ name: candidatesTable.name, email: candidatesTable.email })
+    .from(candidatesTable)
+    .where(eq(candidatesTable.batchId, batchId));
+  const existingNames = new Set(existing.map(r => r.name.trim().toLowerCase()));
+  const existingEmails = new Set(existing.map(r => (r.email ?? "").trim().toLowerCase()).filter(Boolean));
+
+  // Also dedup WITHIN the upload — if the user uploads the same name twice
+  // we want the second one in the duplicates list, not silently inserted.
+  const seenInBatch = new Set<string>();
+
+  let inserted = 0;
+  const duplicates: { row: number; name: string; email: string; reason: string }[] = [];
+  const errors: { row: number; name: string; reason: string }[] = [];
+
+  for (let i = 0; i < candidates.length; i++) {
+    const c = candidates[i];
+    const rowNum = i + 2; // header row + 1-indexed
+    const nameKey = c.name.trim().toLowerCase();
+    const emailKey = c.email.trim().toLowerCase();
+
+    if (existingNames.has(nameKey) || seenInBatch.has(`n:${nameKey}`)) {
+      duplicates.push({ row: rowNum, name: c.name, email: c.email, reason: "Candidate name already exists in this batch" });
+      continue;
+    }
+    if (existingEmails.has(emailKey) || seenInBatch.has(`e:${emailKey}`)) {
+      duplicates.push({ row: rowNum, name: c.name, email: c.email, reason: "Candidate email already exists in this batch" });
+      continue;
+    }
     try {
       await db.insert(candidatesTable).values({
         candidateId: c.candidateId,
         name: c.name,
         email: c.email,
         phone: c.phone ?? null,
-        college: c.college ?? null,
-        degree: c.degree ?? null,
         batchId,
-        joinedAt: new Date().toISOString().split("T")[0],
         status: "active",
       });
       inserted++;
+      seenInBatch.add(`n:${nameKey}`);
+      seenInBatch.add(`e:${emailKey}`);
     } catch (err: unknown) {
-      failed++;
       const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`${c.candidateId}: ${msg}`);
+      // Postgres unique-violation surfaces as a duplicate, not a failure.
+      if (/duplicate key|unique constraint/i.test(msg)) {
+        duplicates.push({ row: rowNum, name: c.name, email: c.email, reason: "Already exists (unique constraint)" });
+      } else {
+        errors.push({ row: rowNum, name: c.name, reason: msg });
+      }
     }
   }
 
-  res.status(201).json({ inserted, failed, errors });
+  // F2: every bulk import logs one audit row covering the whole batch
+  // upload — counts make it easy to spot accidental mass-inserts later.
+  await writeAudit({
+    actorId: req.userId,
+    action: "candidate_bulk_uploaded",
+    entityType: "batch",
+    entityId: batchId,
+    details: {
+      inserted,
+      duplicates: duplicates.length,
+      errors: errors.length,
+      attempted: candidates.length,
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
+  // Back-compat: old client uses `failed` + `errors: string[]`. We keep both
+  // shapes so the existing Candidates.tsx doesn't break while the new UI
+  // reads `duplicates`.
+  res.status(201).json({
+    inserted,
+    failed: errors.length,
+    errors: errors.map(e => `Row ${e.row} (${e.name}): ${e.reason}`),
+    duplicates,
+  });
 });
 
 export default router;

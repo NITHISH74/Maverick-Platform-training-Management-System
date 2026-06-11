@@ -12,6 +12,12 @@ import notificationsRouter from "./notifications";
 import dashboardRouter from "./dashboard";
 import auditRouter from "./audit";
 import reportsRouter from "./reports";
+import aiRouter from "./ai";
+import copilotRouter from "./copilot";
+import monitoringRouter from "./monitoring";
+import trainersRouter from "./trainers";
+import trainerScoringRouter from "./trainer-scoring";
+import feedbackIntelligenceRouter from "./feedback-intelligence";
 
 const router: IRouter = Router();
 
@@ -28,5 +34,11 @@ router.use(notificationsRouter);
 router.use(dashboardRouter);
 router.use(auditRouter);
 router.use(reportsRouter);
+router.use(aiRouter);
+router.use(copilotRouter);
+router.use(monitoringRouter);
+router.use(trainersRouter);
+router.use(trainerScoringRouter);
+router.use(feedbackIntelligenceRouter);
 
 export default router;

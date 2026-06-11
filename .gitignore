@@ -47,3 +47,27 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# Environment files (secrets)
+.env
+.env.local
+.env.*.local
+**/.env
+!**/.env.example
+
+# Python
+**/.venv/
+**/__pycache__/
+*.pyc
+
+# Local dev / harness state — not for the repo
+.claude/
+ai.out.log
+ai.err.log
+api.out.log
+api.err.log
+fe.out.log
+fe.err.log
+
+# Demo-test seed state (per-run DB row IDs — regenerated each `pnpm run demo:seed`)
+scripts/demo-test-ids.json

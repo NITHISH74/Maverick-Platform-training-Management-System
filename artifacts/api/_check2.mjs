@@ -1,0 +1,11 @@
+import pg from "pg";
+const c = new pg.Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+await c.connect();
+const r = await c.query(`SELECT column_name, data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='users' ORDER BY ordinal_position`);
+console.log("users columns:");
+for (const row of r.rows) console.log(`  ${row.column_name} : ${row.data_type}`);
+const cnt = await c.query(`SELECT count(*)::int as n FROM users`);
+console.log(`\nrow count: ${cnt.rows[0].n}`);
+const sample = await c.query(`SELECT id, email, role FROM users LIMIT 5`);
+console.log("sample rows:", sample.rows);
+await c.end();

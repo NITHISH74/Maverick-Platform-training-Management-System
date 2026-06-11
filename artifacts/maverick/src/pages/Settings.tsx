@@ -3,15 +3,21 @@ import { useGetTopperConfig, getGetTopperConfigQueryKey, useUpdateTopperConfig }
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription, CardFooter } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Settings2, Save } from "lucide-react";
+import { Settings2, Save, Lock } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { Slider } from "@/components/ui/slider";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function Settings() {
   const { toast } = useToast();
+  const { user } = useAuth();
+  // Mirror the existing pattern from Batches.tsx / Dashboard.tsx — trainers
+  // see the page (so the walkthrough's "Topper weightages" pointer doesn't
+  // 404) but cannot edit. Server-side PATCH /api/topper-config returns 403
+  // for trainers as defence in depth.
+  const canEdit = user?.role === "admin" || user?.role === "coordinator";
   const { data: config, isLoading } = useGetTopperConfig({
     query: { queryKey: getGetTopperConfigQueryKey() }
   });
@@ -73,6 +79,15 @@ export default function Settings() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-8 pt-6">
+            {!canEdit && (
+              <div
+                className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+                data-testid="weightage-readonly-notice"
+              >
+                <Lock className="h-4 w-4 mt-0.5 shrink-0" />
+                <p>Weightage configuration is managed by coordinators and admins.</p>
+              </div>
+            )}
             {isLoading ? (
               <div className="space-y-6">
                 <Skeleton className="h-12 w-full" />
@@ -86,12 +101,13 @@ export default function Settings() {
                     <Label className="text-base font-semibold">Assessments Weight</Label>
                     <span className="font-mono font-bold text-lg">{assessmentWeight}%</span>
                   </div>
-                  <Slider 
-                    value={[assessmentWeight]} 
-                    max={100} 
-                    step={5} 
+                  <Slider
+                    value={[assessmentWeight]}
+                    max={100}
+                    step={5}
                     onValueChange={(val) => setAssessmentWeight(val[0])}
                     className="py-4"
+                    disabled={!canEdit}
                   />
                   <p className="text-sm text-muted-foreground">Weight applied to the average of all sprint and coding assessments.</p>
                 </div>
@@ -101,12 +117,13 @@ export default function Settings() {
                     <Label className="text-base font-semibold">Project Weight</Label>
                     <span className="font-mono font-bold text-lg">{projectWeight}%</span>
                   </div>
-                  <Slider 
-                    value={[projectWeight]} 
-                    max={100} 
-                    step={5} 
+                  <Slider
+                    value={[projectWeight]}
+                    max={100}
+                    step={5}
                     onValueChange={(val) => setProjectWeight(val[0])}
                     className="py-4"
+                    disabled={!canEdit}
                   />
                   <p className="text-sm text-muted-foreground">Weight applied to the final capstone project evaluation.</p>
                 </div>
@@ -116,35 +133,38 @@ export default function Settings() {
                     <Label className="text-base font-semibold">Attendance Weight</Label>
                     <span className="font-mono font-bold text-lg">{attendanceWeight}%</span>
                   </div>
-                  <Slider 
-                    value={[attendanceWeight]} 
-                    max={100} 
-                    step={5} 
+                  <Slider
+                    value={[attendanceWeight]}
+                    max={100}
+                    step={5}
                     onValueChange={(val) => setAttendanceWeight(val[0])}
                     className="py-4"
+                    disabled={!canEdit}
                   />
                   <p className="text-sm text-muted-foreground">Weight applied to the overall attendance percentage.</p>
                 </div>
-                
+
                 <div className={`p-4 rounded-md flex items-center justify-between font-bold border-2 ${isValid ? 'bg-green-50 border-green-200 text-green-800' : 'bg-destructive/10 border-destructive/30 text-destructive'}`}>
                   <span>Total Weight Allocation</span>
                   <span className="text-xl">{total}%</span>
                 </div>
-                {!isValid && (
+                {!isValid && canEdit && (
                   <p className="text-sm text-destructive font-medium text-right">Total must equal exactly 100%.</p>
                 )}
               </>
             )}
           </CardContent>
-          <CardFooter className="bg-muted/30 border-t justify-end py-4">
-            <Button 
-              onClick={handleSave} 
-              disabled={isLoading || !isValid || updateMutation.isPending}
-            >
-              <Save className="mr-2 h-4 w-4" />
-              {updateMutation.isPending ? "Saving..." : "Save Configuration"}
-            </Button>
-          </CardFooter>
+          {canEdit && (
+            <CardFooter className="bg-muted/30 border-t justify-end py-4">
+              <Button
+                onClick={handleSave}
+                disabled={isLoading || !isValid || updateMutation.isPending}
+              >
+                <Save className="mr-2 h-4 w-4" />
+                {updateMutation.isPending ? "Saving..." : "Save Configuration"}
+              </Button>
+            </CardFooter>
+          )}
         </Card>
       </div>
     </Layout>

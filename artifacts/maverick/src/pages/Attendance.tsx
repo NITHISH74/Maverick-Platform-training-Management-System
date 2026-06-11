@@ -3,8 +3,10 @@ import {
   useListBatches,
   useListAttendance,
   useBulkCreateAttendance,
+  useUpdateAttendance,
   useListCandidates,
 } from "@workspace/api-client-react";
+import { useToast } from "@/hooks/use-toast";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -179,12 +181,35 @@ function RosterRow({
   const [status, setStatus] = useState<AttendanceStatus>((record.status as AttendanceStatus) ?? "present");
   const [remarks, setRemarks] = useState(record.remarks ?? "");
   const [saved, setSaved] = useState(false);
-  const bulkCreate = useBulkCreateAttendance();
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+  // Bug fix: this row previously POSTed to /attendance/bulk with batchId=0
+  // and date="" — that silently failed validation and nothing was written
+  // to the DB. The per-row update is a PATCH to /api/attendance/:id which
+  // we already have a generated hook for.
+  const updateAttendance = useUpdateAttendance();
 
   const handleSave = () => {
-    bulkCreate.mutate(
-      { data: { batchId: 0, date: "", records: [{ candidateId: record.id, status, remarks: remarks || undefined }] } },
-      { onSuccess: () => { setSaved(true); setTimeout(() => setSaved(false), 2000); } }
+    updateAttendance.mutate(
+      { id: record.id, data: { status, remarks: remarks || undefined } },
+      {
+        onSuccess: () => {
+          setSaved(true);
+          setTimeout(() => setSaved(false), 2000);
+          queryClient.invalidateQueries({ queryKey: ["listAttendance"] });
+          toast({
+            title: "Attendance saved",
+            description: `${record.candidateName ?? "Candidate"} marked ${status}.`,
+          });
+        },
+        onError: (err) => {
+          toast({
+            title: "Failed to save attendance",
+            description: err instanceof Error ? err.message : String(err),
+            variant: "destructive",
+          });
+        },
+      },
     );
   };
 
@@ -208,8 +233,8 @@ function RosterRow({
         <Input value={remarks} onChange={e => { setRemarks(e.target.value); setSaved(false); }} placeholder="Add note..." className="h-8" />
       </TableCell>
       <TableCell className="text-right">
-        <Button variant="ghost" size="sm" onClick={handleSave} disabled={bulkCreate.isPending}>
-          {saved ? "Saved" : "Save"}
+        <Button variant="ghost" size="sm" onClick={handleSave} disabled={updateAttendance.isPending}>
+          {updateAttendance.isPending ? "Saving…" : saved ? "Saved" : "Save"}
         </Button>
       </TableCell>
     </TableRow>
@@ -225,7 +250,11 @@ export default function Attendance() {
   const queryClient = useQueryClient();
   const bulkCreate = useBulkCreateAttendance();
 
-  const { data: batches } = useListBatches({ status: "running" });
+  // Show batches in any pre-completed state so newly-created (planned) batches
+  // are also pickable in the dropdown. Completed/archived batches are hidden
+  // client-side below.
+  const { data: allBatches } = useListBatches({});
+  const batches = (allBatches ?? []).filter(b => b.status !== "completed" && b.status !== "archived");
 
   const { data: records, isLoading, refetch } = useListAttendance(
     { batchId: selectedBatch ? parseInt(selectedBatch) : undefined, date },

@@ -1,4 +1,4 @@
-import { Router, type IRouter } from "express";
+import { Router, type IRouter, type Request, type Response } from "express";
 import { eq } from "drizzle-orm";
 import {
   db, candidatesTable, batchesTable, attendanceTable,
@@ -11,8 +11,123 @@ import {
   GetConsolidatedReportQueryParams,
 } from "@workspace/api-zod";
 import { authMiddleware } from "../middlewares/auth";
+import { writeAudit } from "../lib/rbac";
 
 const router: IRouter = Router();
+
+// ----------------------------------------------------------------------------
+// PDF passthrough — F3 (AI PDF reports)
+//
+// CSV / JSON is the default. When the client passes ?format=pdf we:
+//   1. Build the same row set we would have returned as JSON.
+//   2. POST it to the AI service /reports/pdf (which narrates with GPT and
+//      renders the PDF via reportlab).
+//   3. Stream the PDF bytes straight back to the browser.
+//   4. Write a `report_downloaded` audit row.
+//
+// AI service URL + internal token follow the pattern from routes/ai.ts and
+// routes/copilot.ts. PDF mode is centralised in `maybeRenderPdf` so each
+// report endpoint stays one line away from its existing JSON behaviour.
+// ----------------------------------------------------------------------------
+
+const AI_BASE = process.env.AI_SERVICE_URL ?? "http://localhost:9000";
+const INTERNAL_TOKEN =
+  process.env.AI_INTERNAL_TOKEN ?? "smoke-test-secret-1234567890";
+
+type ReportType = "attendance" | "assessment" | "topper" | "consolidated";
+
+async function maybeRenderPdf(
+  req: Request,
+  res: Response,
+  reportType: ReportType,
+  rows: unknown[],
+  extra: { batchName?: string | null; filters?: Record<string, unknown> } = {},
+): Promise<boolean> {
+  if (req.query.format !== "pdf") return false;
+
+  try {
+    const upstream = await fetch(`${AI_BASE}/reports/pdf`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-token": INTERNAL_TOKEN,
+      },
+      body: JSON.stringify({
+        report_type: reportType,
+        rows,
+        batch_name: extra.batchName ?? null,
+        filters: extra.filters ?? null,
+      }),
+    });
+
+    if (!upstream.ok) {
+      const text = await upstream.text();
+      res.status(502).json({
+        error: "AI service failed to generate PDF",
+        detail: text.slice(0, 500),
+      });
+      return true;
+    }
+
+    const filename = `${reportType}-report.pdf`;
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${filename}"`,
+    );
+    // Forward the upstream AI-generated flag so the UI could surface it
+    // later (e.g. "AI summary unavailable — used deterministic fallback").
+    const aiFlag = upstream.headers.get("x-ai-generated");
+    if (aiFlag) res.setHeader("X-AI-Generated", aiFlag);
+
+    const reader = upstream.body?.getReader();
+    if (!reader) {
+      res.end();
+    } else {
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        res.write(value);
+      }
+      res.end();
+    }
+
+    await writeAudit({
+      actorId: req.userId,
+      action: "report_downloaded",
+      entityType: "report",
+      entityId: null,
+      details: {
+        report_type: reportType,
+        format: "pdf",
+        row_count: rows.length,
+        role: req.userRole,
+        filters: extra.filters ?? null,
+        batch_name: extra.batchName ?? null,
+        ai_generated: aiFlag === "1",
+      },
+    });
+    return true;
+  } catch (e: unknown) {
+    res.status(502).json({
+      error: "AI service unreachable",
+      detail: e instanceof Error ? e.message : String(e),
+    });
+    return true;
+  }
+}
+
+// Look up a batch name once per PDF request — small extra query, lets the
+// PDF cover page show "Batch: Java-01" instead of just "All batches".
+async function batchNameOrNull(batchId: number | undefined): Promise<string | null> {
+  if (!batchId) return null;
+  const [b] = await db
+    .select({ name: batchesTable.name })
+    .from(batchesTable)
+    .where(eq(batchesTable.id, batchId));
+  return b?.name ?? null;
+}
 
 router.get("/reports/attendance", authMiddleware, async (req, res): Promise<void> => {
   const params = GetAttendanceReportQueryParams.safeParse(req.query);
@@ -44,6 +159,12 @@ router.get("/reports/attendance", authMiddleware, async (req, res): Promise<void
   });
 
   enriched.sort((a, b) => a.date.localeCompare(b.date));
+
+  if (await maybeRenderPdf(req, res, "attendance", enriched, {
+    batchName: await batchNameOrNull(batchId),
+    filters: { startDate, endDate },
+  })) return;
+
   res.json(enriched);
 });
 
@@ -79,6 +200,10 @@ router.get("/reports/assessments", authMiddleware, async (req, res): Promise<voi
       };
     });
 
+  if (await maybeRenderPdf(req, res, "assessment", rows, {
+    batchName: await batchNameOrNull(batchId),
+  })) return;
+
   res.json(rows);
 });
 
@@ -108,6 +233,10 @@ router.get("/reports/toppers", authMiddleware, async (req, res): Promise<void> =
         attendanceScore: t.attendanceScore ? Math.round(Number(t.attendanceScore) * 10) / 10 : null,
       };
     });
+
+  if (await maybeRenderPdf(req, res, "topper", enriched, {
+    batchName: await batchNameOrNull(batchId),
+  })) return;
 
   res.json(enriched);
 });
@@ -152,6 +281,11 @@ router.get("/reports/consolidated", authMiddleware, async (req, res): Promise<vo
       joinedAt: c.joinedAt ?? null,
     };
   });
+
+  if (await maybeRenderPdf(req, res, "consolidated", rows, {
+    batchName: await batchNameOrNull(batchId),
+    filters: { status },
+  })) return;
 
   res.json(rows);
 });

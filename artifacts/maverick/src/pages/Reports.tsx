@@ -15,7 +15,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { AlertTriangle, Download, FileText, Trophy, Users, CalendarCheck } from "lucide-react";
+import { AlertTriangle, Download, FileText, Trophy, Users, CalendarCheck, FileDown, Loader2 } from "lucide-react";
+import { useAuth } from "@/hooks/useAuth";
+import { useToast } from "@/hooks/use-toast";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { EmptyState } from "@/components/ui/empty-state";
+import { TableSkeletonRows } from "@/components/ui/table-skeleton";
 
 function downloadCSV(filename: string, rows: string[][]) {
   const csv = rows.map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -28,9 +33,69 @@ function downloadCSV(filename: string, rows: string[][]) {
   URL.revokeObjectURL(url);
 }
 
+// PDF download goes through the same /api/reports/* endpoint with
+// ?format=pdf; the backend forwards to the AI service which narrates +
+// renders. We can't use the generated TanStack hook here because the
+// response is a binary stream, not JSON — so this drops to a raw fetch.
+async function downloadPdf(
+  endpoint: string,
+  query: Record<string, string | number | undefined>,
+  filename: string,
+  token: string | null,
+): Promise<void> {
+  if (!token) throw new Error("not authenticated");
+  const url = new URL(endpoint, window.location.origin);
+  url.searchParams.set("format", "pdf");
+  for (const [k, v] of Object.entries(query)) {
+    if (v !== undefined && v !== null && v !== "") {
+      url.searchParams.set(k, String(v));
+    }
+  }
+  const res = await fetch(url.toString(), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const detail = await res.text();
+    throw new Error(`HTTP ${res.status}: ${detail.slice(0, 200)}`);
+  }
+  const blob = await res.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(objectUrl);
+}
+
 export default function Reports() {
   const [selectedBatch, setSelectedBatch] = useState<string>("all");
   const batchId = selectedBatch !== "all" ? Number(selectedBatch) : undefined;
+  const { token } = useAuth();
+  const { toast } = useToast();
+  // Per-report "is this PDF rendering?" flag. The AI summary call takes a few
+  // seconds, so we surface a spinner + disable the button until it's back.
+  const [pdfBusy, setPdfBusy] = useState<Record<string, boolean>>({});
+
+  async function runPdfDownload(
+    key: "attendance" | "assessment" | "topper" | "consolidated",
+    endpoint: string,
+    filename: string,
+  ): Promise<void> {
+    setPdfBusy(s => ({ ...s, [key]: true }));
+    try {
+      await downloadPdf(endpoint, { batchId }, filename, token);
+    } catch (e) {
+      toast({
+        title: "PDF download failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setPdfBusy(s => ({ ...s, [key]: false }));
+    }
+  }
 
   const { data: batches } = useListBatches();
   const { data: attendanceReport, isLoading: attendanceLoading } = useGetAttendanceReport({ batchId });
@@ -169,10 +234,24 @@ export default function Reports() {
                   <CardTitle>Consolidated Candidate Report</CardTitle>
                   <CardDescription>Status, attendance, and assessment average per candidate</CardDescription>
                 </div>
-                <Button variant="outline" size="sm" onClick={exportConsolidated} disabled={!consolidatedReport?.length}>
-                  <Download className="h-3.5 w-3.5 mr-2" />
-                  Export CSV
-                </Button>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={exportConsolidated} disabled={!consolidatedReport?.length}>
+                    <Download className="h-3.5 w-3.5 mr-2" />
+                    Export CSV
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => runPdfDownload("consolidated", "/api/reports/consolidated", "consolidated-report.pdf")}
+                    disabled={!consolidatedReport?.length || pdfBusy.consolidated}
+                    title="AI-narrated PDF with executive summary, insights, risks, and recommendations"
+                  >
+                    {pdfBusy.consolidated
+                      ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                      : <FileDown className="h-3.5 w-3.5 mr-2" />}
+                    Download PDF
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 {consolidatedLoading ? (
@@ -200,9 +279,8 @@ export default function Reports() {
                             <TableCell className="font-medium">{r.candidateName}</TableCell>
                             <TableCell>{r.batchName}</TableCell>
                             <TableCell>
-                              <Badge variant={(statusColors[r.status] as "default" | "destructive" | "secondary" | "outline") ?? "outline"}>
-                                {r.status}
-                              </Badge>
+                              {/* F5: standardised StatusBadge — replaces the ad-hoc statusColors map. */}
+                              <StatusBadge status={r.status} />
                             </TableCell>
                             <TableCell className="text-right">{r.attendancePct}%</TableCell>
                             <TableCell className="text-right">{r.avgScore}%</TableCell>
@@ -213,7 +291,11 @@ export default function Reports() {
                     </Table>
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground text-center py-8">No data available.</p>
+                  <EmptyState
+                    icon={Users}
+                    title="No consolidated data yet"
+                    description="Once candidates are added and assessed, their consolidated rollup appears here."
+                  />
                 )}
               </CardContent>
             </Card>
@@ -226,10 +308,24 @@ export default function Reports() {
                   <CardTitle>Attendance Report</CardTitle>
                   <CardDescription>Daily attendance records per candidate and batch</CardDescription>
                 </div>
-                <Button variant="outline" size="sm" onClick={exportAttendance} disabled={!attendanceReport?.length}>
-                  <Download className="h-3.5 w-3.5 mr-2" />
-                  Export CSV
-                </Button>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={exportAttendance} disabled={!attendanceReport?.length}>
+                    <Download className="h-3.5 w-3.5 mr-2" />
+                    Export CSV
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => runPdfDownload("attendance", "/api/reports/attendance", "attendance-report.pdf")}
+                    disabled={!attendanceReport?.length || pdfBusy.attendance}
+                    title="AI-narrated PDF with executive summary, insights, risks, and recommendations"
+                  >
+                    {pdfBusy.attendance
+                      ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                      : <FileDown className="h-3.5 w-3.5 mr-2" />}
+                    Download PDF
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 {attendanceLoading ? (
@@ -255,15 +351,8 @@ export default function Reports() {
                             <TableCell>{r.batchName}</TableCell>
                             <TableCell className="font-mono text-xs">{r.date}</TableCell>
                             <TableCell>
-                              <Badge
-                                variant={
-                                  r.status === "present" ? "default"
-                                  : r.status === "absent" ? "destructive"
-                                  : "secondary"
-                                }
-                              >
-                                {r.status}
-                              </Badge>
+                              {/* F5: standardised StatusBadge handles present/absent/leave palette. */}
+                              <StatusBadge status={r.status} />
                             </TableCell>
                             <TableCell className="text-xs text-muted-foreground">{r.remarks ?? "—"}</TableCell>
                           </TableRow>
@@ -272,7 +361,11 @@ export default function Reports() {
                     </Table>
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground text-center py-8">No attendance data available.</p>
+                  <EmptyState
+                    icon={CalendarCheck}
+                    title="No attendance recorded yet"
+                    description="Attendance rows appear after trainers mark candidates present, absent, or on leave."
+                  />
                 )}
               </CardContent>
             </Card>
@@ -285,10 +378,24 @@ export default function Reports() {
                   <CardTitle>Assessment Score Report</CardTitle>
                   <CardDescription>Scores per candidate per assessment with normalised percentages</CardDescription>
                 </div>
-                <Button variant="outline" size="sm" onClick={exportAssessments} disabled={!assessmentReport?.length}>
-                  <Download className="h-3.5 w-3.5 mr-2" />
-                  Export CSV
-                </Button>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={exportAssessments} disabled={!assessmentReport?.length}>
+                    <Download className="h-3.5 w-3.5 mr-2" />
+                    Export CSV
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => runPdfDownload("assessment", "/api/reports/assessments", "assessment-report.pdf")}
+                    disabled={!assessmentReport?.length || pdfBusy.assessment}
+                    title="AI-narrated PDF with executive summary, insights, risks, and recommendations"
+                  >
+                    {pdfBusy.assessment
+                      ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                      : <FileDown className="h-3.5 w-3.5 mr-2" />}
+                    Download PDF
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 {assessmentLoading ? (
@@ -331,7 +438,11 @@ export default function Reports() {
                     </Table>
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground text-center py-8">No assessment data available.</p>
+                  <EmptyState
+                    icon={FileText}
+                    title="No assessment scores yet"
+                    description="Once trainers record sprint, API, or project scores, they show up here."
+                  />
                 )}
               </CardContent>
             </Card>
@@ -344,10 +455,24 @@ export default function Reports() {
                   <CardTitle>Topper Report</CardTitle>
                   <CardDescription>WCS-ranked candidates with component score breakdown</CardDescription>
                 </div>
-                <Button variant="outline" size="sm" onClick={exportToppers} disabled={!topperReport?.length}>
-                  <Download className="h-3.5 w-3.5 mr-2" />
-                  Export CSV
-                </Button>
+                <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={exportToppers} disabled={!topperReport?.length}>
+                    <Download className="h-3.5 w-3.5 mr-2" />
+                    Export CSV
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => runPdfDownload("topper", "/api/reports/toppers", "topper-report.pdf")}
+                    disabled={!topperReport?.length || pdfBusy.topper}
+                    title="AI-narrated PDF with executive summary, insights, risks, and recommendations"
+                  >
+                    {pdfBusy.topper
+                      ? <Loader2 className="h-3.5 w-3.5 mr-2 animate-spin" />
+                      : <FileDown className="h-3.5 w-3.5 mr-2" />}
+                    Download PDF
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
                 {topperLoading ? (
@@ -369,8 +494,11 @@ export default function Reports() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {topperReport.map((r) => (
-                          <TableRow key={r.rank} className={r.rank <= 3 ? "bg-muted/30" : ""}>
+                        {topperReport.map((r, i) => (
+                          // key on index, not r.rank — ranks repeat across batches
+                          // in the "All Batches" view, which collided and produced
+                          // React duplicate-key warnings.
+                          <TableRow key={i} className={r.rank <= 3 ? "bg-muted/30" : ""}>
                             <TableCell className="font-bold text-center">
                               {r.rank === 1 ? "1st" : r.rank === 2 ? "2nd" : r.rank === 3 ? "3rd" : `${r.rank}th`}
                             </TableCell>
@@ -386,9 +514,12 @@ export default function Reports() {
                     </Table>
                   </div>
                 ) : (
-                  <p className="text-sm text-muted-foreground text-center py-8">
-                    No topper data. Run the Toppers computation first.
-                  </p>
+                  <EmptyState
+                    icon={Trophy}
+                    title="No topper data yet"
+                    description="Run the Toppers computation on a batch to see the leaderboard."
+                    action={{ label: "Open Toppers", href: "/toppers" }}
+                  />
                 )}
               </CardContent>
             </Card>

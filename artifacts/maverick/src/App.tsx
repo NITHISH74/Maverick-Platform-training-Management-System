@@ -5,6 +5,8 @@ import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ProtectedRoute } from "@/components/ProtectedRoute";
 import NotFound from "@/pages/not-found";
+import { Spinner } from "@/components/ui/spinner";
+import { useAuth } from "@/hooks/useAuth";
 
 // Pages
 import Login from "@/pages/Login";
@@ -17,18 +19,40 @@ import Assessments from "@/pages/Assessments";
 import Attendance from "@/pages/Attendance";
 import Toppers from "@/pages/Toppers";
 import Feedback from "@/pages/Feedback";
+// The Coordinator Copilot is intentionally NOT a routed page — it's a
+// slide-over panel mounted at Layout level and opened from the header
+// button or the sidebar entry. See components/CopilotContext.tsx.
 import Notifications from "@/pages/Notifications";
 import Users from "@/pages/Users";
 import AuditLog from "@/pages/AuditLog";
 import Settings from "@/pages/Settings";
 import Reports from "@/pages/Reports";
+import Monitoring from "@/pages/Monitoring";
+import BatchRiskDetail from "@/pages/BatchRiskDetail";
+import TrainerDetail from "@/pages/TrainerDetail";
+import Trainers from "@/pages/Trainers";
+
+// Root path handler. When Auth0 redirects back from a login, the URL is
+// `/?code=...&state=...` — if we blindly <Redirect to="/dashboard">, wouter
+// strips the query string before the Auth0 SDK can read it, so login never
+// completes and we end up in a Sign-in → Accept loop. Instead, show a spinner
+// while Auth0 finishes, then route based on auth state.
+function RootGate() {
+  const { isLoading, isAuthenticated } = useAuth();
+  if (isLoading) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-background">
+        <Spinner className="h-8 w-8 text-primary" />
+      </div>
+    );
+  }
+  return <Redirect to={isAuthenticated ? "/dashboard" : "/login"} />;
+}
 
 function Router() {
   return (
     <Switch>
-      <Route path="/">
-        <Redirect to="/dashboard" />
-      </Route>
+      <Route path="/" component={RootGate} />
       <Route path="/login" component={Login} />
       
       <ProtectedRoute path="/dashboard" component={Dashboard} />
@@ -40,11 +64,29 @@ function Router() {
       <ProtectedRoute path="/attendance" component={Attendance} />
       <ProtectedRoute path="/toppers" component={Toppers} />
       <ProtectedRoute path="/feedback" component={Feedback} />
+      {/* /copilot and /chatbot intentionally have no routes. The Copilot
+          is a slide-over panel — see Layout.tsx + CopilotContext.tsx.
+          Stale bookmarks fall through to the NotFound route below, which
+          is the right signal (the URL never represented real state). */}
       <ProtectedRoute path="/notifications" component={Notifications} />
       <ProtectedRoute path="/users" component={Users} allowedRoles={["admin"]} />
       <ProtectedRoute path="/audit" component={AuditLog} allowedRoles={["admin", "coordinator"]} />
       <ProtectedRoute path="/settings" component={Settings} allowedRoles={["admin", "coordinator"]} />
       <ProtectedRoute path="/reports" component={Reports} allowedRoles={["admin", "coordinator"]} />
+
+      {/* Autonomous batch monitoring agent — risk dashboard + alert inbox.
+          Visible to all three roles; row-level scoping is enforced server-side
+          in routes/monitoring.ts via visibleBatchIds(). */}
+      <ProtectedRoute path="/monitoring" component={Monitoring} allowedRoles={["admin", "coordinator", "trainer"]} />
+      <ProtectedRoute path="/monitoring/batch/:batchId" component={BatchRiskDetail} allowedRoles={["admin", "coordinator", "trainer"]} />
+
+      {/* Trainer profile — hosts the Trainer Intelligence Graph (F1) and
+          AI Trainer Score Card (F2). Admin/coordinator-only because it
+          exposes cross-trainer comparisons. */}
+      {/* Trainers roster — discoverable entry to the per-trainer profile
+          (Intelligence Graph + AI Score Card). admin + coordinator only. */}
+      <ProtectedRoute path="/trainers" component={Trainers} allowedRoles={["admin", "coordinator"]} />
+      <ProtectedRoute path="/trainers/:id" component={TrainerDetail} allowedRoles={["admin", "coordinator"]} />
 
       <Route component={NotFound} />
     </Switch>

@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useListCandidates, useListBatches, useBulkImportCandidates } from "@workspace/api-client-react";
 import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
-import { Search, Upload, Download, CheckCircle2, XCircle } from "lucide-react";
+import { Search, Upload, Download, CheckCircle2, XCircle, AlertTriangle } from "lucide-react";
 import { Link } from "wouter";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -20,6 +20,21 @@ interface CsvCandidate {
   phone?: string;
   college?: string;
   degree?: string;
+}
+
+function downloadDuplicatesCsv(rows: { row: number; name: string; email?: string; reason: string }[]) {
+  const lines = [
+    ["Row", "Name", "Email", "Reason"],
+    ...rows.map(r => [String(r.row), r.name, r.email ?? "", r.reason]),
+  ];
+  const csv = lines.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `bulk_import_duplicates_${new Date().toISOString().slice(0, 10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function parseCsv(text: string): CsvCandidate[] {
@@ -50,7 +65,12 @@ function BulkImportDialog({ open, onClose }: { open: boolean; onClose: () => voi
   const [batchId, setBatchId] = useState("");
   const [parsed, setParsed] = useState<CsvCandidate[]>([]);
   const [fileName, setFileName] = useState("");
-  const [result, setResult] = useState<{ inserted: number; failed: number; errors: string[] } | null>(null);
+  const [result, setResult] = useState<{
+    inserted: number;
+    failed: number;
+    errors: string[];
+    duplicates?: { row: number; name: string; email?: string; reason: string }[];
+  } | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [mutError, setMutError] = useState<string | null>(null);
 
@@ -87,7 +107,9 @@ function BulkImportDialog({ open, onClose }: { open: boolean; onClose: () => voi
       { data: { batchId: Number(batchId), candidates: parsed } },
       {
         onSuccess: (data) => {
-          setResult(data);
+          // Server returns `duplicates` in addition to inserted/failed/errors.
+          // The generated TS type doesn't know about it yet, so cast.
+          setResult(data as typeof result);
           queryClient.invalidateQueries({ queryKey: ["listCandidates"] });
         },
         onError: (err: unknown) => {
@@ -148,7 +170,7 @@ function BulkImportDialog({ open, onClose }: { open: boolean; onClose: () => voi
           {fileError && <p className="text-sm text-destructive">{fileError}</p>}
           {mutError && <p className="text-sm text-destructive">{mutError}</p>}
           {result && (
-            <div className="rounded-md border p-4 space-y-2">
+            <div className="rounded-md border p-4 space-y-3">
               <div className="flex items-center gap-2 text-sm">
                 <CheckCircle2 className="h-4 w-4 text-emerald-500" />
                 <span>{result.inserted} inserted successfully</span>
@@ -159,6 +181,48 @@ function BulkImportDialog({ open, onClose }: { open: boolean; onClose: () => voi
                   <div>
                     <p>{result.failed} failed</p>
                     {result.errors.slice(0, 5).map((e, i) => <p key={i} className="text-xs text-destructive/80">{e}</p>)}
+                  </div>
+                </div>
+              )}
+              {result.duplicates && result.duplicates.length > 0 && (
+                <div className="rounded-md border border-yellow-400/60 bg-yellow-50 dark:bg-yellow-950/30 p-3 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-sm font-medium text-yellow-700 dark:text-yellow-300">
+                      <AlertTriangle className="h-4 w-4" />
+                      {result.duplicates.length} duplicate entr{result.duplicates.length === 1 ? "y" : "ies"} were skipped
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="h-7 gap-1.5"
+                      onClick={() => downloadDuplicatesCsv(result.duplicates ?? [])}
+                    >
+                      <Download className="h-3.5 w-3.5" />
+                      Download Duplicates Report
+                    </Button>
+                  </div>
+                  <div className="max-h-48 overflow-auto rounded border bg-background">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-16">Row</TableHead>
+                          <TableHead>Name</TableHead>
+                          <TableHead>Email</TableHead>
+                          <TableHead>Reason</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {result.duplicates.map((d, i) => (
+                          <TableRow key={i}>
+                            <TableCell className="font-mono text-xs">{d.row}</TableCell>
+                            <TableCell className="text-sm">{d.name}</TableCell>
+                            <TableCell className="text-sm text-muted-foreground">{d.email ?? ""}</TableCell>
+                            <TableCell className="text-xs">{d.reason}</TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
                   </div>
                 </div>
               )}
@@ -182,6 +246,18 @@ export default function Candidates() {
   const { data: candidates, isLoading } = useListCandidates();
   const [search, setSearch] = useState("");
   const [showImport, setShowImport] = useState(false);
+
+  // F3: auto-open the Bulk Import dialog when navigated here from the
+  // Batches page with ?openBulkImport=true. We clear the query param after
+  // opening so a manual refresh doesn't keep re-triggering it.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("openBulkImport") === "true") {
+      setShowImport(true);
+      url.searchParams.delete("openBulkImport");
+      window.history.replaceState({}, "", url.pathname + (url.search ? url.search : ""));
+    }
+  }, []);
 
   const filtered = candidates?.filter(c =>
     !search ||

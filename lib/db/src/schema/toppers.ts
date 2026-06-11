@@ -4,11 +4,17 @@ import { z } from "zod/v4";
 import { batchesTable } from "./batches";
 import { candidatesTable } from "./candidates";
 
+// Supabase has additional weights (sprint + api) and a per-batch override.
+// The JS prop `assessmentWeight` is kept for backward compat — it sums
+// `sprint_weight + api_weight` server-side when read.
 export const topperConfigTable = pgTable("topper_config", {
   id: serial("id").primaryKey(),
-  assessmentWeight: numeric("assessment_weight", { precision: 5, scale: 2 }).notNull().default("60"),
+  batchId: integer("batch_id"),
+  attendanceWeight: numeric("attendance_weight", { precision: 5, scale: 2 }).notNull().default("20"),
+  sprintWeight: numeric("sprint_weight", { precision: 5, scale: 2 }).notNull().default("25"),
+  apiWeight: numeric("api_weight", { precision: 5, scale: 2 }).notNull().default("25"),
   projectWeight: numeric("project_weight", { precision: 5, scale: 2 }).notNull().default("30"),
-  attendanceWeight: numeric("attendance_weight", { precision: 5, scale: 2 }).notNull().default("10"),
+  modifiedBy: integer("modified_by"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });
 

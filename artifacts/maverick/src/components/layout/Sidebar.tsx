@@ -8,6 +8,7 @@ import {
   ClipboardCheck,
   Trophy,
   MessageSquare,
+  Sparkles,
   Bell,
   Settings,
   Shield,
@@ -15,8 +16,11 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   BarChart2,
+  ShieldAlert,
+  BrainCircuit,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useCopilot } from "@/components/CopilotContext";
 
 const NAV_ITEMS = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, roles: ["admin", "coordinator", "trainer"] },
@@ -25,7 +29,17 @@ const NAV_ITEMS = [
   { href: "/attendance", label: "Attendance", icon: CalendarCheck, roles: ["admin", "coordinator", "trainer"] },
   { href: "/assessments", label: "Assessments", icon: ClipboardCheck, roles: ["admin", "coordinator", "trainer"] },
   { href: "/toppers", label: "Toppers", icon: Trophy, roles: ["admin", "coordinator"] },
+  // Trainer Intelligence (F1) + AI Trainer Score (F2) entry point. The list
+  // page lives at /trainers; clicking a trainer opens /trainers/:id.
+  { href: "/trainers", label: "Trainers", icon: BrainCircuit, roles: ["admin", "coordinator"] },
   { href: "/feedback", label: "Feedback", icon: MessageSquare, roles: ["admin", "coordinator", "trainer"] },
+  // Batch Monitoring — autonomous risk-scan agent. Visible to all 3 roles;
+  // server-side scoping (visibleBatchIds) hides batches the user can't access.
+  { href: "/monitoring", label: "Monitoring", icon: ShieldAlert, roles: ["admin", "coordinator", "trainer"] },
+  // Coordinator Copilot — special-cased below: clicking opens the slide-over
+  // panel instead of navigating. `href: null` distinguishes it from regular
+  // routed nav items so the click handler knows what to do.
+  { href: null as string | null, label: "Coordinator Copilot", icon: Sparkles, roles: ["admin", "coordinator", "trainer"] },
   { href: "/reports", label: "Reports", icon: BarChart2, roles: ["admin", "coordinator"] },
   { href: "/notifications", label: "Notifications", icon: Bell, roles: ["admin", "coordinator", "trainer"] },
   { href: "/users", label: "Users", icon: Shield, roles: ["admin"] },
@@ -41,6 +55,7 @@ interface SidebarProps {
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [location] = useLocation();
   const { user } = useAuth();
+  const { openCopilot } = useCopilot();
 
   if (!user) return null;
 
@@ -73,22 +88,47 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <div className="flex-1 overflow-y-auto py-4">
         <nav className={cn("space-y-1", collapsed ? "px-2" : "px-3")}>
           {filteredItems.map((item) => {
-            const isActive = location.startsWith(item.href);
+            const isActive = item.href ? location.startsWith(item.href) : false;
+            // F5 spec: active nav item gets a stronger visual indicator —
+            // a left-border accent plus a background tint. Borders are drawn
+            // as a transparent 2-px left border on every item so the active
+            // state doesn't cause horizontal jitter when switching pages.
+            const className = cn(
+              "flex items-center rounded-md text-sm font-medium transition-colors w-full border-l-2 border-transparent",
+              collapsed ? "justify-center px-0 py-2" : "gap-3 px-3 py-2",
+              isActive
+                ? "bg-sidebar-accent/80 text-sidebar-accent-foreground border-l-primary"
+                : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground",
+            );
+            const inner = (
+              <>
+                <item.icon className={cn("h-4 w-4 shrink-0", isActive ? "text-primary" : "text-sidebar-foreground/50")} />
+                {!collapsed && item.label}
+              </>
+            );
+            // Items without an href are action buttons (e.g. opens the
+            // Copilot slide-over).
+            if (!item.href) {
+              return (
+                <button
+                  key={item.label}
+                  type="button"
+                  onClick={openCopilot}
+                  className={cn(className, "text-left")}
+                  title={collapsed ? item.label : undefined}
+                >
+                  {inner}
+                </button>
+              );
+            }
             return (
               <Link
                 key={item.href}
                 href={item.href}
-                className={cn(
-                  "flex items-center rounded-md text-sm font-medium transition-colors",
-                  collapsed ? "justify-center px-0 py-2" : "gap-3 px-3 py-2",
-                  isActive
-                    ? "bg-sidebar-accent text-sidebar-accent-foreground"
-                    : "text-sidebar-foreground/70 hover:bg-sidebar-accent/50 hover:text-sidebar-foreground"
-                )}
+                className={className}
                 title={collapsed ? item.label : undefined}
               >
-                <item.icon className={cn("h-4 w-4 shrink-0", isActive ? "text-primary" : "text-sidebar-foreground/50")} />
-                {!collapsed && item.label}
+                {inner}
               </Link>
             );
           })}

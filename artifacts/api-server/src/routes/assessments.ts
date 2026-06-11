@@ -1,16 +1,21 @@
 import { Router, type IRouter } from "express";
-import { eq, and } from "drizzle-orm";
-import { db, assessmentsTable, assessmentScoresTable, batchesTable, candidatesTable } from "@workspace/db";
-import { BulkUploadAssessmentScoresBody } from "@workspace/api-zod";
+import { eq, and, inArray } from "drizzle-orm";
+import { db, assessmentsTable, batchesTable, candidatesTable } from "@workspace/db";
 import {
   CreateAssessmentBody, UpdateAssessmentBody, GetAssessmentParams, UpdateAssessmentParams,
   DeleteAssessmentParams, CreateAssessmentScoreBody, BulkCreateAssessmentScoresBody,
   UpdateAssessmentScoreParams, UpdateAssessmentScoreBody, ListAssessmentsQueryParams,
-  ListAssessmentScoresQueryParams
+  ListAssessmentScoresQueryParams, BulkUploadAssessmentScoresBody,
 } from "@workspace/api-zod";
 import { authMiddleware } from "../middlewares/auth";
+import { getTrainerBatchIds, writeAudit } from "../lib/rbac";
 
 const router: IRouter = Router();
+
+// In Supabase each row in `assessments` is one (candidate, assessment) score.
+// We surface two API shapes off the same table:
+//   GET /assessments         — deduplicated, one row per (batch, title, type)
+//   GET /assessment-scores   — every raw row
 
 async function enrichAssessment(a: typeof assessmentsTable.$inferSelect) {
   const [batch] = await db.select({ name: batchesTable.name }).from(batchesTable).where(eq(batchesTable.id, a.batchId));
@@ -22,50 +27,84 @@ async function enrichAssessment(a: typeof assessmentsTable.$inferSelect) {
     type: a.type,
     scheduledDate: a.scheduledDate,
     maxScore: Number(a.maxScore),
-    description: a.description ?? null,
+    description: null,
+    uploadedBy: a.uploadedBy ?? null,
     createdAt: a.createdAt,
     updatedAt: a.updatedAt,
   };
 }
 
-async function enrichScore(s: typeof assessmentScoresTable.$inferSelect) {
-  const [assessment] = await db.select().from(assessmentsTable).where(eq(assessmentsTable.id, s.assessmentId));
+async function enrichScore(s: typeof assessmentsTable.$inferSelect) {
   const [candidate] = await db.select({ name: candidatesTable.name }).from(candidatesTable).where(eq(candidatesTable.id, s.candidateId));
-  const maxScore = assessment ? Number(assessment.maxScore) : null;
+  const maxScore = Number(s.maxScore);
   const score = Number(s.score);
   const percentage = maxScore ? Math.round((score / maxScore) * 100) : null;
   return {
     id: s.id,
-    assessmentId: s.assessmentId,
-    assessmentTitle: assessment?.title ?? null,
-    assessmentType: assessment?.type ?? null,
+    assessmentId: s.id,
+    assessmentTitle: s.title,
+    assessmentType: s.type,
     candidateId: s.candidateId,
     candidateName: candidate?.name ?? null,
     score,
     maxScore,
     percentage,
-    remarks: s.remarks ?? null,
+    passed: s.passed,
+    remarks: null,
     createdAt: s.createdAt,
   };
 }
 
+// GET /assessments returns a deduplicated assessment header view.
 router.get("/assessments", authMiddleware, async (req, res): Promise<void> => {
   const params = ListAssessmentsQueryParams.safeParse(req.query);
-  let assessments: typeof assessmentsTable.$inferSelect[];
-  if (params.success) {
-    const { batchId, type } = params.data;
-    const conditions: ReturnType<typeof eq>[] = [];
-    if (batchId) conditions.push(eq(assessmentsTable.batchId, batchId));
-    if (type) conditions.push(eq(assessmentsTable.type, type));
-    assessments = conditions.length > 0
-      ? await db.select().from(assessmentsTable).where(and(...conditions))
-      : await db.select().from(assessmentsTable);
-  } else {
-    assessments = await db.select().from(assessmentsTable);
+  const batchId = params.success ? params.data.batchId : undefined;
+  const typeFilter = params.success ? params.data.type : undefined;
+
+  // Trainer scoping
+  let trainerBatches: number[] | null = null;
+  if (req.userRole === "trainer" && req.userId) {
+    trainerBatches = await getTrainerBatchIds(req.userId);
+    if (trainerBatches.length === 0) { res.json([]); return; }
+    if (batchId && !trainerBatches.includes(batchId)) { res.json([]); return; }
   }
-  const enriched = await Promise.all(assessments.map(enrichAssessment));
+
+  const conditions: ReturnType<typeof eq>[] = [];
+  if (batchId) conditions.push(eq(assessmentsTable.batchId, batchId));
+  else if (trainerBatches) conditions.push(inArray(assessmentsTable.batchId, trainerBatches));
+  if (typeFilter) conditions.push(eq(assessmentsTable.type, typeFilter));
+
+  const rows = conditions.length > 0
+    ? await db.select().from(assessmentsTable).where(and(...conditions))
+    : await db.select().from(assessmentsTable);
+
+  // Dedupe to (batchId, title, type, scheduledDate) and keep the earliest id.
+  const seen = new Map<string, typeof assessmentsTable.$inferSelect>();
+  for (const r of rows) {
+    const k = `${r.batchId}|${r.title}|${r.type}|${r.scheduledDate}`;
+    const existing = seen.get(k);
+    if (!existing || r.id < existing.id) seen.set(k, r);
+  }
+  const enriched = await Promise.all(Array.from(seen.values()).map(enrichAssessment));
   res.json(enriched);
 });
+
+// Creating an assessment really means: insert one row per candidate in the
+// batch with score=0, uploadedBy=current user. Trainers can do this for their
+// own batches; admin/coordinator unrestricted.
+// Map the frontend / OpenAPI assessment_type values to the Postgres enum
+// values from migration 0001 — `assessment_type` accepts only
+// ('sprint','api','project'). Without this mapping a payload like
+// `type: "sprint_review"` lands as an invalid enum value and the INSERT
+// throws, surfacing as an unhelpful 500. See Bug 1.
+const ASSESSMENT_TYPE_MAP: Record<string, string> = {
+  sprint: "sprint",
+  sprint_review: "sprint",
+  api: "api",
+  coding: "api",
+  project: "project",
+  project_evaluation: "project",
+};
 
 router.post("/assessments", authMiddleware, async (req, res): Promise<void> => {
   const parsed = CreateAssessmentBody.safeParse(req.body);
@@ -73,18 +112,81 @@ router.post("/assessments", authMiddleware, async (req, res): Promise<void> => {
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const scheduledDate = parsed.data.scheduledDate instanceof Date
-    ? parsed.data.scheduledDate.toISOString().split("T")[0]
-    : String(parsed.data.scheduledDate);
-  const [assessment] = await db.insert(assessmentsTable).values({
-    batchId: parsed.data.batchId,
-    title: parsed.data.title,
-    type: parsed.data.type,
-    scheduledDate,
-    maxScore: String(parsed.data.maxScore ?? 100),
-    description: parsed.data.description ?? null,
-  }).returning();
-  res.status(201).json(await enrichAssessment(assessment));
+  const { batchId, title, type, scheduledDate, maxScore } = parsed.data;
+
+  // Trainer must own the batch.
+  if (req.userRole === "trainer" && req.userId) {
+    const trainerBatches = await getTrainerBatchIds(req.userId);
+    if (!trainerBatches.includes(batchId)) {
+      res.status(403).json({ error: "Forbidden: batch not assigned to you" });
+      return;
+    }
+  }
+
+  // Translate the API-level enum to the DB-level enum (see ASSESSMENT_TYPE_MAP above).
+  const dbType = ASSESSMENT_TYPE_MAP[type];
+  if (!dbType) {
+    res.status(400).json({
+      error: `Unsupported assessment type "${type}". Expected one of: ${Object.keys(ASSESSMENT_TYPE_MAP).join(", ")}.`,
+    });
+    return;
+  }
+
+  // Look up all candidates in the batch so we can create one row per candidate.
+  const batchCandidates = await db.select({ id: candidatesTable.id }).from(candidatesTable).where(eq(candidatesTable.batchId, batchId));
+  if (batchCandidates.length === 0) {
+    res.status(400).json({ error: "Batch has no candidates — add candidates before creating assessments." });
+    return;
+  }
+
+  const scheduledDateStr = scheduledDate instanceof Date
+    ? scheduledDate.toISOString().split("T")[0]
+    : String(scheduledDate);
+  const today = new Date().toISOString().split("T")[0];
+
+  // NB: `passed` is a GENERATED column in Postgres (Drizzle's schema
+  // exposes it as a regular boolean, but the live table has it computed
+  // from score/max_score). Sending any value — including null — triggers
+  // `cannot insert a non-DEFAULT value into column "passed"`. We omit it
+  // entirely and let the DB compute it.
+  const values = batchCandidates.map(c => ({
+    batchId,
+    candidateId: c.id,
+    title,
+    type: dbType,
+    scheduledDate: scheduledDateStr,
+    maxScore: String(maxScore ?? 100),
+    score: "0",
+    uploadedDate: today,
+    uploadedBy: req.userId ?? null,
+  }));
+
+  // Wrap the INSERT + audit + enrichment so DB-level errors surface as
+  // a clean 400 with the Postgres detail instead of a raw 500. Common
+  // cases: FK violation (batchId / candidateId), enum/type cast errors,
+  // numeric out-of-range on max_score.
+  try {
+    const inserted = await db.insert(assessmentsTable).values(values).returning();
+    const [firstRow] = inserted;
+    if (!firstRow) {
+      res.status(500).json({ error: "Insert returned no rows" });
+      return;
+    }
+
+    await writeAudit({
+      actorId: req.userId,
+      action: "assessment_created",
+      entityType: "assessment",
+      entityId: firstRow.id,
+      details: { after: { batchId, title, type: dbType, scheduledDate: scheduledDateStr, candidateCount: inserted.length }, role: req.userRole, ip: req.ip ?? null },
+    });
+
+    // Return the deduplicated header (one assessment, not N rows).
+    res.status(201).json(await enrichAssessment(firstRow));
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    res.status(400).json({ error: `Could not create assessment: ${msg}` });
+  }
 });
 
 router.get("/assessments/:id", authMiddleware, async (req, res): Promise<void> => {
@@ -93,12 +195,12 @@ router.get("/assessments/:id", authMiddleware, async (req, res): Promise<void> =
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [assessment] = await db.select().from(assessmentsTable).where(eq(assessmentsTable.id, params.data.id));
-  if (!assessment) {
+  const [row] = await db.select().from(assessmentsTable).where(eq(assessmentsTable.id, params.data.id));
+  if (!row) {
     res.status(404).json({ error: "Assessment not found" });
     return;
   }
-  res.json(await enrichAssessment(assessment));
+  res.json(await enrichAssessment(row));
 });
 
 router.patch("/assessments/:id", authMiddleware, async (req, res): Promise<void> => {
@@ -112,14 +214,49 @@ router.patch("/assessments/:id", authMiddleware, async (req, res): Promise<void>
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const updateData: Record<string, unknown> = { ...parsed.data };
-  if (parsed.data.maxScore !== undefined) updateData.maxScore = String(parsed.data.maxScore);
-  const [assessment] = await db.update(assessmentsTable).set(updateData).where(eq(assessmentsTable.id, params.data.id)).returning();
-  if (!assessment) {
+
+  // Look up the row first so we can apply ownership + scope rules.
+  const [existing] = await db.select().from(assessmentsTable).where(eq(assessmentsTable.id, params.data.id));
+  if (!existing) {
     res.status(404).json({ error: "Assessment not found" });
     return;
   }
-  res.json(await enrichAssessment(assessment));
+  // Trainer can only edit their own assessments.
+  if (req.userRole === "trainer") {
+    if (existing.uploadedBy !== req.userId) {
+      res.status(403).json({ error: "Forbidden: you can only edit assessments you created" });
+      return;
+    }
+  }
+
+  const updateData: Record<string, unknown> = {};
+  if (parsed.data.title !== undefined) updateData.title = parsed.data.title;
+  if (parsed.data.type !== undefined) updateData.type = parsed.data.type;
+  if (parsed.data.scheduledDate !== undefined) updateData.scheduledDate = parsed.data.scheduledDate;
+  if (parsed.data.maxScore !== undefined) updateData.maxScore = String(parsed.data.maxScore);
+
+  // Apply update to all sibling rows that share the same assessment header,
+  // so the dedup view stays consistent.
+  await db.update(assessmentsTable).set(updateData).where(and(
+    eq(assessmentsTable.batchId, existing.batchId),
+    eq(assessmentsTable.title, existing.title),
+    eq(assessmentsTable.type, existing.type),
+    eq(assessmentsTable.scheduledDate, existing.scheduledDate),
+  ));
+  const [refreshed] = await db.select().from(assessmentsTable).where(eq(assessmentsTable.id, params.data.id));
+  await writeAudit({
+    actorId: req.userId,
+    action: "assessment_updated",
+    entityType: "assessment",
+    entityId: refreshed?.id ?? existing.id,
+    details: {
+      before: { title: existing.title, type: existing.type, scheduledDate: existing.scheduledDate, maxScore: existing.maxScore },
+      after: refreshed ? { title: refreshed.title, type: refreshed.type, scheduledDate: refreshed.scheduledDate, maxScore: refreshed.maxScore } : null,
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
+  res.json(await enrichAssessment(refreshed));
 });
 
 router.delete("/assessments/:id", authMiddleware, async (req, res): Promise<void> => {
@@ -128,38 +265,72 @@ router.delete("/assessments/:id", authMiddleware, async (req, res): Promise<void
     res.status(400).json({ error: params.error.message });
     return;
   }
-  const [assessment] = await db.delete(assessmentsTable).where(eq(assessmentsTable.id, params.data.id)).returning();
-  if (!assessment) {
+  const [existing] = await db.select().from(assessmentsTable).where(eq(assessmentsTable.id, params.data.id));
+  if (!existing) {
     res.status(404).json({ error: "Assessment not found" });
     return;
   }
+  // Trainer can only delete assessments they uploaded.
+  if (req.userRole === "trainer") {
+    if (existing.uploadedBy !== req.userId) {
+      res.status(403).json({ error: "Forbidden: you can only delete assessments you created" });
+      return;
+    }
+  }
+
+  // Delete all sibling rows that make up this assessment.
+  const deleted = await db.delete(assessmentsTable).where(and(
+    eq(assessmentsTable.batchId, existing.batchId),
+    eq(assessmentsTable.title, existing.title),
+    eq(assessmentsTable.type, existing.type),
+    eq(assessmentsTable.scheduledDate, existing.scheduledDate),
+  )).returning();
+
+  await writeAudit({
+    actorId: req.userId,
+    action: "assessment_deleted",
+    entityType: "assessment",
+    entityId: existing.id,
+    details: {
+      before: {
+        batchId: existing.batchId,
+        title: existing.title,
+        type: existing.type,
+        scheduledDate: existing.scheduledDate,
+      },
+      rowsDeleted: deleted.length,
+      role: req.userRole,
+      ip: req.ip ?? null,
+    },
+  });
+
   res.sendStatus(204);
 });
 
 router.get("/assessment-scores", authMiddleware, async (req, res): Promise<void> => {
   const params = ListAssessmentScoresQueryParams.safeParse(req.query);
-  let scores: typeof assessmentScoresTable.$inferSelect[];
-  if (params.success) {
-    const { assessmentId, candidateId, batchId } = params.data;
-    if (batchId) {
-      const assessments = await db.select({ id: assessmentsTable.id }).from(assessmentsTable).where(eq(assessmentsTable.batchId, batchId));
-      const ids = assessments.map(a => a.id);
-      if (ids.length === 0) { res.json([]); return; }
-      scores = await db.select().from(assessmentScoresTable);
-      scores = scores.filter(s => ids.includes(s.assessmentId));
-    } else if (assessmentId && candidateId) {
-      scores = await db.select().from(assessmentScoresTable).where(and(eq(assessmentScoresTable.assessmentId, assessmentId), eq(assessmentScoresTable.candidateId, candidateId)));
-    } else if (assessmentId) {
-      scores = await db.select().from(assessmentScoresTable).where(eq(assessmentScoresTable.assessmentId, assessmentId));
-    } else if (candidateId) {
-      scores = await db.select().from(assessmentScoresTable).where(eq(assessmentScoresTable.candidateId, candidateId));
-    } else {
-      scores = await db.select().from(assessmentScoresTable);
-    }
-  } else {
-    scores = await db.select().from(assessmentScoresTable);
+  const assessmentId = params.success ? params.data.assessmentId : undefined;
+  const candidateId = params.success ? params.data.candidateId : undefined;
+  const batchId = params.success ? params.data.batchId : undefined;
+
+  // Trainer scoping
+  let trainerBatches: number[] | null = null;
+  if (req.userRole === "trainer" && req.userId) {
+    trainerBatches = await getTrainerBatchIds(req.userId);
+    if (trainerBatches.length === 0) { res.json([]); return; }
+    if (batchId && !trainerBatches.includes(batchId)) { res.json([]); return; }
   }
-  const enriched = await Promise.all(scores.map(enrichScore));
+
+  const conditions: ReturnType<typeof eq>[] = [];
+  if (assessmentId) conditions.push(eq(assessmentsTable.id, assessmentId));
+  if (candidateId) conditions.push(eq(assessmentsTable.candidateId, candidateId));
+  if (batchId) conditions.push(eq(assessmentsTable.batchId, batchId));
+  else if (trainerBatches) conditions.push(inArray(assessmentsTable.batchId, trainerBatches));
+
+  const rows = conditions.length > 0
+    ? await db.select().from(assessmentsTable).where(and(...conditions))
+    : await db.select().from(assessmentsTable);
+  const enriched = await Promise.all(rows.map(enrichScore));
   res.json(enriched);
 });
 
@@ -169,51 +340,19 @@ router.post("/assessment-scores", authMiddleware, async (req, res): Promise<void
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const [score] = await db.insert(assessmentScoresTable).values({ ...parsed.data, score: String(parsed.data.score) }).returning();
-  res.status(201).json(await enrichScore(score));
+  // Without a reference row we can't fill batch_id / title / type. Leave for
+  // the rewritten API.
+  res.status(501).json({ error: "Per-candidate score insert not implemented on Supabase shape." });
 });
 
 router.post("/assessments/bulk-scores", authMiddleware, async (req, res): Promise<void> => {
-  const parsed = BulkUploadAssessmentScoresBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-  const { assessmentId, scores } = parsed.data;
-  let inserted = 0;
-  let failed = 0;
-  const errors: string[] = [];
-
-  for (const s of scores) {
-    try {
-      await db.insert(assessmentScoresTable).values({
-        assessmentId,
-        candidateId: s.candidateId,
-        score: String(s.score),
-        remarks: s.remarks ?? null,
-      });
-      inserted++;
-    } catch (err: unknown) {
-      failed++;
-      const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`candidateId ${s.candidateId}: ${msg}`);
-    }
-  }
-
-  res.status(201).json({ inserted, failed, errors });
+  void BulkUploadAssessmentScoresBody;
+  res.status(501).json({ error: "Bulk score insert not implemented on Supabase shape." });
 });
 
 router.post("/assessment-scores/bulk", authMiddleware, async (req, res): Promise<void> => {
-  const parsed = BulkCreateAssessmentScoresBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.message });
-    return;
-  }
-  const { assessmentId, scores } = parsed.data;
-  const values = scores.map(s => ({ assessmentId, candidateId: s.candidateId, score: String(s.score), remarks: s.remarks ?? null }));
-  const inserted = await db.insert(assessmentScoresTable).values(values).returning();
-  const enriched = await Promise.all(inserted.map(enrichScore));
-  res.status(201).json(enriched);
+  void BulkCreateAssessmentScoresBody;
+  res.status(501).json({ error: "Bulk score insert not implemented on Supabase shape." });
 });
 
 router.patch("/assessment-scores/:id", authMiddleware, async (req, res): Promise<void> => {
@@ -227,14 +366,14 @@ router.patch("/assessment-scores/:id", authMiddleware, async (req, res): Promise
     res.status(400).json({ error: parsed.error.message });
     return;
   }
-  const updateData: Record<string, unknown> = { ...parsed.data };
+  const updateData: Record<string, unknown> = {};
   if (parsed.data.score !== undefined) updateData.score = String(parsed.data.score);
-  const [score] = await db.update(assessmentScoresTable).set(updateData).where(eq(assessmentScoresTable.id, params.data.id)).returning();
-  if (!score) {
+  const [row] = await db.update(assessmentsTable).set(updateData).where(eq(assessmentsTable.id, params.data.id)).returning();
+  if (!row) {
     res.status(404).json({ error: "Score not found" });
     return;
   }
-  res.json(await enrichScore(score));
+  res.json(await enrichScore(row));
 });
 
 export default router;

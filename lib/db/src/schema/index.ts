@@ -6,4 +6,8 @@ export * from "./assessments";
 export * from "./toppers";
 export * from "./feedback";
 export * from "./notifications";
+export * from "./notifications-log";
 export * from "./audit";
+export * from "./monitoring";
+export * from "./attendance-settings";
+export * from "./feedback-windows";
