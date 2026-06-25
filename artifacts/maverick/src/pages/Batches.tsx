@@ -268,7 +268,7 @@ function BatchGrid({
                 <Button
                   variant="ghost"
                   size="icon"
-                  title="Delete batch"
+                  aria-label="Delete batch"
                   onClick={() => onDelete({ id: batch.id, name: batch.name })}
                   className="text-destructive hover:text-destructive"
                 >

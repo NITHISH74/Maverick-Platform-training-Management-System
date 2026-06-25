@@ -68,12 +68,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         collapsed ? "w-16" : "w-64"
       )}
     >
-      <div
+      <button
+        type="button"
         className={cn(
-          "flex h-14 items-center border-b border-sidebar-border cursor-pointer select-none group",
+          "flex h-14 w-full items-center border-b border-sidebar-border cursor-pointer select-none group",
           collapsed ? "justify-center px-0" : "justify-between px-4"
         )}
         onClick={onToggle}
+        aria-expanded={!collapsed}
+        aria-label="Toggle sidebar"
         title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
       >
         {!collapsed && (
@@ -84,7 +87,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         <span className={cn("text-sidebar-foreground/50 group-hover:text-sidebar-primary transition-colors", collapsed && "mx-auto")}>
           {collapsed ? <PanelLeftOpen className="h-5 w-5" /> : <PanelLeftClose className="h-5 w-5" />}
         </span>
-      </div>
+      </button>
       <div className="flex-1 overflow-y-auto py-4">
         <nav className={cn("space-y-1", collapsed ? "px-2" : "px-3")}>
           {filteredItems.map((item) => {

@@ -4,7 +4,8 @@ import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { TableSkeletonRows } from "@/components/ui/table-skeleton";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
@@ -284,8 +285,10 @@ export default function Candidates() {
           <CardHeader className="pb-3 border-b">
             <div className="flex items-center gap-4">
               <div className="relative flex-1 max-w-sm">
+                <label htmlFor="candidate-search" className="sr-only">Search candidates</label>
                 <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
                 <Input
+                  id="candidate-search"
                   type="search"
                   placeholder="Search candidates..."
                   className="pl-8"
@@ -309,16 +312,14 @@ export default function Candidates() {
               </TableHeader>
               <TableBody>
                 {isLoading ? (
-                  <TableRow>
-                    <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">Loading candidates...</TableCell>
-                  </TableRow>
+                  <TableSkeletonRows columns={5} rows={5} />
                 ) : filtered && filtered.length > 0 ? (
                   filtered.map((candidate) => (
                     <TableRow key={candidate.id} className="hover:bg-muted/50 transition-colors">
                       <TableCell className="font-mono text-sm">{candidate.candidateId}</TableCell>
                       <TableCell className="font-medium">{candidate.name}</TableCell>
                       <TableCell>{candidate.batchName}</TableCell>
-                      <TableCell><Badge variant="outline">{candidate.status}</Badge></TableCell>
+                      <TableCell><StatusBadge status={candidate.status} /></TableCell>
                       <TableCell className="text-right">
                         <Link href={`/candidates/${candidate.id}`} className="text-primary hover:underline text-sm font-medium">
                           View Profile

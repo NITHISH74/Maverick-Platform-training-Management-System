@@ -15,7 +15,7 @@ import { RiskBadge } from "@/components/monitoring/RiskBadge";
 import { useAuth } from "@/hooks/useAuth";
 import { ClearanceModal } from "@/components/dashboard/ClearanceModal";
 
-const COLORS = ['#0ea5e9', '#22c55e', '#eab308', '#f97316', '#ef4444', '#8b5cf6'];
+const COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)'];
 
 export default function Dashboard() {
   const { data: summary, isLoading: summaryLoading } = useGetDashboardSummary();
@@ -59,7 +59,10 @@ export default function Dashboard() {
           <p className="text-muted-foreground">Overview of your training operations.</p>
         </div>
         
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        {/* F10: KPI tiles grouped into two labelled rows for visual clarity. */}
+        <div className="space-y-3">
+          <h2 className="text-sm font-semibold text-muted-foreground">Program Overview</h2>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Total Candidates</CardTitle>
@@ -115,9 +118,13 @@ export default function Dashboard() {
               </p>
             </CardContent>
           </Card>
+          </div>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-4">
+        {/* F10: second KPI row — clearance funnel, divided from the overview above. */}
+        <div className="space-y-3 border-t pt-6">
+          <h2 className="text-sm font-semibold text-muted-foreground">Clearance Summary</h2>
+          <div className="grid gap-4 md:grid-cols-4">
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Cleared</CardTitle>
@@ -158,6 +165,7 @@ export default function Dashboard() {
               <p className="text-xs text-muted-foreground">Dropped from training</p>
             </CardContent>
           </Card>
+          </div>
         </div>
 
         {/* Compact monitoring summary — surfaces the Autonomous Batch
@@ -189,15 +197,15 @@ export default function Dashboard() {
               ) : trends && trends.length > 0 ? (
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={trends} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#333" opacity={0.2} />
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
                     <XAxis 
                       dataKey="date" 
                       tickFormatter={(val) => format(new Date(val), 'MMM d')}
-                      stroke="#888"
+                      stroke="var(--muted-foreground)"
                       fontSize={12}
                       tickMargin={10}
                     />
-                    <YAxis stroke="#888" fontSize={12} tickMargin={10} />
+                    <YAxis stroke="var(--muted-foreground)" fontSize={12} tickMargin={10} />
                     <RechartsTooltip 
                       labelFormatter={(val) => format(new Date(val), 'MMM d, yyyy')}
                       contentStyle={{ backgroundColor: 'var(--popover)', borderColor: 'var(--border)', borderRadius: '6px' }}
@@ -298,9 +306,8 @@ export default function Dashboard() {
 //
 // Reuses useBatchRiskSummaries() from the monitoring frontend client. Shows
 // the worst-risk batch + the open-alert count, and links to /monitoring for
-// the full UI. Renders nothing while loading (no skeleton noise on the
-// main page); shows a neutral "All systems nominal" line when there's no
-// data.
+// the full UI. Shows a skeleton placeholder while loading; shows a neutral
+// "All systems nominal" line when there's no data.
 // ---------------------------------------------------------------------------
 
 const RISK_RANK: Record<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL", number> = {
@@ -309,7 +316,7 @@ const RISK_RANK: Record<"LOW" | "MEDIUM" | "HIGH" | "CRITICAL", number> = {
 
 function MonitoringSummaryCard() {
   const { data: summaries, isLoading } = useBatchRiskSummaries();
-  if (isLoading) return null;
+  if (isLoading) return <Skeleton className="h-48 w-full" />;
   const rows = summaries ?? [];
   const openAlerts = rows.reduce((sum, r) => sum + (r.openAlerts ?? 0), 0);
   const worst = rows.reduce<typeof rows[number] | null>((acc, r) => {
@@ -455,7 +462,7 @@ function AttendanceByBatchChart() {
         ) : (
           <ResponsiveContainer width="100%" height="100%">
             <BarChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#333" opacity={0.15} />
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
               <XAxis dataKey="batchName" tick={{ fontSize: 12 }} />
               <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} />
               <RechartsTooltip formatter={(v: number) => `${v}%`} />
@@ -527,7 +534,7 @@ function ClearanceSummaryTable() {
                   </TableCell>
                   {canEdit && (
                     <TableCell className="text-right">
-                      <Button variant="ghost" size="icon" title="Set clearance rate" onClick={() => setModalBatch(r)}>
+                      <Button variant="ghost" size="icon" aria-label="Set clearance rate" onClick={() => setModalBatch(r)}>
                         <Settings className="h-4 w-4 text-muted-foreground" />
                       </Button>
                     </TableCell>
@@ -590,14 +597,14 @@ function BatchComparisonSection() {
             <div className="h-[280px] mb-4">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={programs} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#333" opacity={0.15} />
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
                   <XAxis dataKey="program" tick={{ fontSize: 12 }} />
                   <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} />
                   <RechartsTooltip formatter={(v: number) => `${v}%`} />
                   <Legend />
-                  <Bar dataKey="avg_attendance_pct" name="Attendance" fill="#0ea5e9" />
-                  <Bar dataKey="avg_score_pct" name="Avg score" fill="#22c55e" />
-                  <Bar dataKey="clearance_rate" name="Clearance" fill="#f59e0b" />
+                  <Bar dataKey="avg_attendance_pct" name="Attendance" fill="var(--chart-1)" />
+                  <Bar dataKey="avg_score_pct" name="Avg score" fill="var(--chart-2)" />
+                  <Bar dataKey="clearance_rate" name="Clearance" fill="var(--chart-3)" />
                 </BarChart>
               </ResponsiveContainer>
             </div>

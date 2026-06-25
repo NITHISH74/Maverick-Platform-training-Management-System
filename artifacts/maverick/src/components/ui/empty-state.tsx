@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { Inbox } from "lucide-react";
+import { Link } from "wouter";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -55,7 +56,8 @@ export function EmptyState({
         <div className="mt-4">
           {action.href ? (
             <Button asChild size="sm">
-              <a href={action.href}>{action.label}</a>
+              {/* wouter Link → client-side nav, no full page reload */}
+              <Link href={action.href}>{action.label}</Link>
             </Button>
           ) : (
             <Button size="sm" onClick={action.onClick}>
