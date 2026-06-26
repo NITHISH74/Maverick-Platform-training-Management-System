@@ -27,7 +27,7 @@ Open **http://localhost:5173** once all three are up. Detailed setup, env vars, 
 - [Key features](#key-features)
 - [Autonomous Batch Monitoring Agent](#autonomous-batch-monitoring-agent)
 - [Coordinator Copilot](#coordinator-copilot)
-- [V7 — HTML Alert Emails, Feedback Email Polish & PDF Report Fixes](#v7--html-alert-emails-feedback-email-polish--pdf-report-fixes)
+- [HTML Alert Emails, Feedback Email Polish & PDF Report Fixes](#html-alert-emails-feedback-email-polish--pdf-report-fixes)
 - [Techniques used](#techniques-used)
 - [Tech stack](#tech-stack)
 - [Prerequisites](#prerequisites)
@@ -867,9 +867,9 @@ Trigger output captures: alerts created (across all 8 monitoring rules), emails 
 
 ---
 
-## V7 — HTML Alert Emails, Feedback Email Polish & PDF Report Fixes
+## HTML Alert Emails, Feedback Email Polish & PDF Report Fixes
 
-V7 hardens the notification and reporting paths. Every change is **additive or a fix** — no routes or tables were removed; migration `0007_attendance_feedback_notifications.sql` was made portable, and the existing report endpoints keep their CSV/Excel behaviour unchanged.
+hardens the notification and reporting paths. Every change is **additive or a fix** — no routes or tables were removed; migration `0007_attendance_feedback_notifications.sql` was made portable, and the existing report endpoints keep their CSV/Excel behaviour unchanged.
 
 ### 1 — Rich HTML alert emails + escalation CC
 
