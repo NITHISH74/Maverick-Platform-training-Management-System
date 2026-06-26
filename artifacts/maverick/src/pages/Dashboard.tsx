@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Users, GraduationCap, CalendarCheck, TrendingUp, AlertTriangle, Activity, ShieldAlert, ArrowRight, XCircle, Hourglass, Settings, Check, X } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Layout } from "@/components/layout/Layout";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar, Legend, PieChart, Pie, Cell, Cell as BarCell } from "recharts";
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, BarChart, Bar, Legend, PieChart, Pie, Cell, Cell as BarCell, ReferenceLine } from "recharts";
 import { format } from "date-fns";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useBatchRiskSummaries } from "@/lib/monitoring-api";
@@ -15,7 +15,7 @@ import { RiskBadge } from "@/components/monitoring/RiskBadge";
 import { useAuth } from "@/hooks/useAuth";
 import { ClearanceModal } from "@/components/dashboard/ClearanceModal";
 
-const COLORS = ['var(--chart-1)', 'var(--chart-2)', 'var(--chart-3)', 'var(--chart-4)', 'var(--chart-5)'];
+const COLORS = ['var(--color-chart-1)', 'var(--color-chart-2)', 'var(--color-chart-3)', 'var(--color-chart-4)', 'var(--color-chart-5)'];
 
 export default function Dashboard() {
   const { data: summary, isLoading: summaryLoading } = useGetDashboardSummary();
@@ -189,7 +189,7 @@ export default function Dashboard() {
           <Card className="md:col-span-4">
             <CardHeader>
               <CardTitle>Attendance Trend</CardTitle>
-              <CardDescription>System-wide daily presence count</CardDescription>
+              <CardDescription>System-wide daily presence vs absence count</CardDescription>
             </CardHeader>
             <CardContent className="h-[300px]">
               {trendsLoading ? (
@@ -198,24 +198,32 @@ export default function Dashboard() {
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={trends} margin={{ top: 5, right: 20, bottom: 5, left: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--border)" />
-                    <XAxis 
-                      dataKey="date" 
-                      tickFormatter={(val) => format(new Date(val), 'MMM d')}
+                    <XAxis
+                      dataKey="date"
+                      tickFormatter={(val) => { try { return format(new Date(val), 'MMM d'); } catch { return val; } }}
                       stroke="var(--muted-foreground)"
-                      fontSize={12}
-                      tickMargin={10}
+                      fontSize={11}
+                      tickMargin={8}
+                      interval="preserveStartEnd"
                     />
-                    <YAxis stroke="var(--muted-foreground)" fontSize={12} tickMargin={10} />
-                    <RechartsTooltip 
-                      labelFormatter={(val) => format(new Date(val), 'MMM d, yyyy')}
+                    <YAxis stroke="var(--muted-foreground)" fontSize={12} tickMargin={8} allowDecimals={false} />
+                    <RechartsTooltip
+                      labelFormatter={(val) => { try { return format(new Date(val), 'MMM d, yyyy'); } catch { return val; } }}
                       contentStyle={{ backgroundColor: 'var(--popover)', borderColor: 'var(--border)', borderRadius: '6px' }}
+                      itemStyle={{ color: 'var(--foreground)' }}
                     />
-                    <Line type="monotone" dataKey="presentCount" name="Present" stroke="var(--primary)" strokeWidth={2} dot={false} activeDot={{ r: 6 }} />
-                    <Line type="monotone" dataKey="absentCount" name="Absent" stroke="var(--destructive)" strokeWidth={2} dot={false} />
+                    <Legend wrapperStyle={{ fontSize: '12px' }} />
+                    <Line type="monotone" dataKey="presentCount" name="Present" stroke="#16a34a" strokeWidth={2} dot={false} activeDot={{ r: 5 }} />
+                    <Line type="monotone" dataKey="absentCount" name="Absent" stroke="#dc2626" strokeWidth={2} dot={false} activeDot={{ r: 5 }} />
+                    <Line type="monotone" dataKey="lateCount" name="Late" stroke="#f59e0b" strokeWidth={1.5} dot={false} strokeDasharray="4 2" />
                   </LineChart>
                 </ResponsiveContainer>
               ) : (
-                <div className="w-full h-full flex items-center justify-center text-muted-foreground text-sm">No trend data available</div>
+                <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-muted-foreground text-sm">
+                  <Activity className="h-8 w-8 opacity-40" />
+                  <span>No attendance records yet.</span>
+                  <span className="text-xs">Trend will appear once attendance is marked.</span>
+                </div>
               )}
             </CardContent>
           </Card>
@@ -444,28 +452,36 @@ function AttendanceByBatchChart() {
     if (!token) return;
     fetch(`/api/dashboard/attendance-by-batch`, { headers: { Authorization: `Bearer ${token}` } })
       .then(async (r) => (r.ok ? r.json() : []))
-      .then((d: AttendanceByBatchRow[]) => setRows(d.map((r) => ({ ...r, batchName: r.batchName.length > 12 ? r.batchName.slice(0, 12) + "…" : r.batchName }))))
+      .then((d: AttendanceByBatchRow[]) => setRows(d.map((r) => ({ ...r, batchName: r.batchName.length > 14 ? r.batchName.slice(0, 14) + "…" : r.batchName }))))
       .catch(() => setRows([]));
   }, [token]);
 
-  if (rows && rows.length === 0) return null;
+  const hasData = rows && rows.some((r) => r.attendancePct > 0);
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Attendance % per batch</CardTitle>
-        <CardDescription>Current week, live batches only. Green ≥ 80%, amber 60–79%, red &lt; 60%.</CardDescription>
+        <CardTitle>Attendance % per Batch</CardTitle>
+        <CardDescription>All-time attendance across active batches. Green ≥ 80%, amber 60–79%, red &lt; 60%.</CardDescription>
       </CardHeader>
       <CardContent className="h-[260px]">
         {!rows ? (
           <Skeleton className="w-full h-full" />
+        ) : rows.length === 0 ? (
+          <div className="w-full h-full flex items-center justify-center text-muted-foreground text-sm">No active batches found.</div>
+        ) : !hasData ? (
+          <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-muted-foreground text-sm">
+            <CalendarCheck className="h-8 w-8 opacity-40" />
+            <span>No attendance records yet.</span>
+            <span className="text-xs">Records will appear once attendance is marked.</span>
+          </div>
         ) : (
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={rows} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
+            <BarChart data={rows} margin={{ top: 8, right: 16, bottom: 40, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" />
-              <XAxis dataKey="batchName" tick={{ fontSize: 12 }} />
-              <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} />
-              <RechartsTooltip formatter={(v: number) => `${v}%`} />
+              <XAxis dataKey="batchName" tick={{ fontSize: 11 }} angle={-30} textAnchor="end" interval={0} />
+              <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} tickFormatter={(v) => `${v}%`} />
+              <RechartsTooltip formatter={(v: number) => [`${v}%`, "Attendance"]} />
               <Bar dataKey="attendancePct" name="Attendance %">
                 {rows.map((r) => <BarCell key={r.batchId} fill={attendanceBarColor(r.attendancePct)} />)}
               </Bar>
@@ -602,9 +618,9 @@ function BatchComparisonSection() {
                   <YAxis domain={[0, 100]} tick={{ fontSize: 12 }} />
                   <RechartsTooltip formatter={(v: number) => `${v}%`} />
                   <Legend />
-                  <Bar dataKey="avg_attendance_pct" name="Attendance" fill="var(--chart-1)" />
-                  <Bar dataKey="avg_score_pct" name="Avg score" fill="var(--chart-2)" />
-                  <Bar dataKey="clearance_rate" name="Clearance" fill="var(--chart-3)" />
+                  <Bar dataKey="avg_attendance_pct" name="Attendance" fill="var(--color-chart-1)" />
+                  <Bar dataKey="avg_score_pct" name="Avg score" fill="var(--color-chart-2)" />
+                  <Bar dataKey="clearance_rate" name="Clearance" fill="var(--color-chart-3)" />
                 </BarChart>
               </ResponsiveContainer>
             </div>

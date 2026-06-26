@@ -326,9 +326,7 @@ router.get("/dashboard/attendance-by-batch", authMiddleware, async (_req, res): 
            COALESCE(ROUND(100.0 * SUM(CASE WHEN a.status='present' THEN 1 ELSE 0 END)::numeric
                           / NULLIF(COUNT(a.id), 0), 1), 0) AS pct
     FROM batches b
-    LEFT JOIN attendance a
-      ON a.batch_id = b.id
-     AND a.attend_date::date >= (NOW() - INTERVAL '7 days')::date
+    LEFT JOIN attendance a ON a.batch_id = b.id
     WHERE b.deleted_at IS NULL
       AND b.status != 'closed'
     GROUP BY b.id, b.name
