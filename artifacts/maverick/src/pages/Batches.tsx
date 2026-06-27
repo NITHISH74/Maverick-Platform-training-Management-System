@@ -18,6 +18,51 @@ import { format } from "date-fns";
 import { useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 
+const BATCH_STATUSES = ["planned", "running", "completed", "closed"] as const;
+type BatchStatus = typeof BATCH_STATUSES[number];
+
+function BatchStatusSelect({ batchId, currentStatus, token, onChanged }: {
+  batchId: number;
+  currentStatus: string;
+  token: string;
+  onChanged: () => void;
+}) {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+
+  async function changeStatus(newStatus: BatchStatus) {
+    if (newStatus === currentStatus) return;
+    setBusy(true);
+    try {
+      const r = await fetch(`/api/batches/${batchId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ status: newStatus }),
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${await r.text()}`);
+      toast({ title: "Status updated", description: `Batch status changed to ${newStatus}.` });
+      onChanged();
+    } catch (e) {
+      toast({ title: "Failed to update status", description: e instanceof Error ? e.message : String(e), variant: "destructive" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Select value={currentStatus} onValueChange={(v) => changeStatus(v as BatchStatus)} disabled={busy}>
+      <SelectTrigger className="h-7 text-xs w-[110px]" onClick={(e) => e.stopPropagation()}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent onClick={(e) => e.stopPropagation()}>
+        {BATCH_STATUSES.map((s) => (
+          <SelectItem key={s} value={s} className="text-xs capitalize">{s}</SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  );
+}
+
 function CreateBatchDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const queryClient = useQueryClient();
   const createBatch = useCreateBatch();
@@ -223,11 +268,13 @@ function DeleteBatchDialog({
 }
 
 function BatchGrid({
-  batches, onDelete, isAdmin,
+  batches, onDelete, isAdmin, token, onRefresh,
 }: {
   batches: Array<{ id: number; name: string; batchCode: string; status: string; candidateCount?: number | null; capacity: number; startDate: string; endDate: string }>;
   onDelete: (b: { id: number; name: string }) => void;
   isAdmin: boolean;
+  token: string;
+  onRefresh: () => void;
 }) {
   if (batches.length === 0) {
     return <p className="text-center py-10 text-sm text-muted-foreground">No batches in this view.</p>;
@@ -241,10 +288,16 @@ function BatchGrid({
               <CardTitle className="text-lg">{batch.name}</CardTitle>
               <p className="text-sm text-muted-foreground font-mono">{batch.batchCode}</p>
             </div>
-            {/* F5: standardised StatusBadge — same palette across every
-                page (Reports, BatchDetail, Candidates, etc.) so trainers
-                don't see "running" looking different in three places. */}
-            <StatusBadge status={batch.status} />
+            {isAdmin ? (
+              <BatchStatusSelect
+                batchId={batch.id}
+                currentStatus={batch.status}
+                token={token}
+                onChanged={onRefresh}
+              />
+            ) : (
+              <StatusBadge status={batch.status} />
+            )}
           </CardHeader>
           <CardContent className="flex-1 flex flex-col justify-between">
             <div className="space-y-3 mb-6 mt-2">
@@ -268,7 +321,7 @@ function BatchGrid({
                 <Button
                   variant="ghost"
                   size="icon"
-                  title="Delete batch"
+                  aria-label="Delete batch"
                   onClick={() => onDelete({ id: batch.id, name: batch.name })}
                   className="text-destructive hover:text-destructive"
                 >
@@ -287,7 +340,7 @@ export default function Batches() {
   const [showCreate, setShowCreate] = useState(false);
   const [deletingBatch, setDeletingBatch] = useState<{ id: number; name: string } | null>(null);
   const { data: batches, isLoading } = useListBatches();
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const queryClient = useQueryClient();
   const [, navigate] = useLocation();
   const canManage = user?.role === "admin" || user?.role === "coordinator";
@@ -356,10 +409,10 @@ export default function Batches() {
               </TabsTrigger>
             </TabsList>
             <TabsContent value="live" className="pt-4">
-              <BatchGrid batches={live as any} onDelete={setDeletingBatch} isAdmin={!!isAdmin} />
+              <BatchGrid batches={live as any} onDelete={setDeletingBatch} isAdmin={!!isAdmin} token={token ?? ""} onRefresh={() => queryClient.invalidateQueries({ queryKey: ["listBatches"] })} />
             </TabsContent>
             <TabsContent value="closed" className="pt-4">
-              <BatchGrid batches={closed as any} onDelete={setDeletingBatch} isAdmin={!!isAdmin} />
+              <BatchGrid batches={closed as any} onDelete={setDeletingBatch} isAdmin={!!isAdmin} token={token ?? ""} onRefresh={() => queryClient.invalidateQueries({ queryKey: ["listBatches"] })} />
             </TabsContent>
           </Tabs>
         )}

@@ -20,7 +20,6 @@ import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { EmptyState } from "@/components/ui/empty-state";
-import { TableSkeletonRows } from "@/components/ui/table-skeleton";
 
 function downloadCSV(filename: string, rows: string[][]) {
   const csv = rows.map(r => r.map(c => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
@@ -142,14 +141,6 @@ export default function Reports() {
     ]);
     downloadCSV("consolidated-report.csv", [headers, ...rows]);
   }
-
-  const statusColors: Record<string, string> = {
-    active: "default",
-    discontinued: "destructive",
-    cleared: "secondary",
-    offered: "outline",
-    onboarded: "outline",
-  };
 
   return (
     <Layout>

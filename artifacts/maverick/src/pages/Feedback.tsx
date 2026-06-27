@@ -4,13 +4,16 @@ import { Layout } from "@/components/layout/Layout";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { StatusBadge } from "@/components/ui/status-badge";
+import { EmptyState } from "@/components/ui/empty-state";
+import { TableSkeletonRows } from "@/components/ui/table-skeleton";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
-import { Download, Mail } from "lucide-react";
+import { Download, Mail, MessageSquare } from "lucide-react";
 import { getToken } from "@/lib/auth";
 
 const DEFAULT_BODY =
@@ -209,7 +212,7 @@ export default function Feedback() {
                       <TableCell className="font-medium">{b.name}</TableCell>
                       <TableCell className="text-sm text-muted-foreground">{b.program}</TableCell>
                       <TableCell>
-                        <Badge variant="secondary" className="uppercase text-[10px]">{b.status}</Badge>
+                        <StatusBadge status={b.status} />
                       </TableCell>
                       <TableCell className="text-right space-x-2">
                         <Button size="sm" variant="outline" onClick={() => setSendDialog({ batchId: b.id, batchName: b.name })}>
@@ -246,10 +249,18 @@ export default function Feedback() {
               </TableHeader>
               <TableBody>
                 {isLoading ? (
-                   <TableRow>
-                     <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">Loading feedback...</TableCell>
-                   </TableRow>
-                 ) : feedback?.map((item) => (
+                  <TableSkeletonRows columns={5} rows={5} />
+                ) : !feedback || feedback.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="p-0">
+                      <EmptyState
+                        icon={MessageSquare}
+                        title="No feedback yet"
+                        description="Once candidates submit the feedback form, their ratings and sentiment show up here."
+                      />
+                    </TableCell>
+                  </TableRow>
+                ) : feedback.map((item) => (
                   <TableRow key={item.id}>
                     <TableCell>{item.batchName}</TableCell>
                     <TableCell>{item.candidateName || "Anonymous"}</TableCell>
